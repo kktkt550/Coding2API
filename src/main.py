@@ -31,8 +31,10 @@ from .api import (
     admin_keys,
     admin_model_availability,
     admin_model_catalog,
+    admin_relay,
     admin_settings,
     admin_stats,
+    admin_tunnel,
     admin_upstream,
     admin_users,
     authorize,
@@ -140,6 +142,7 @@ from .provider.qoder.auth import QoderOAuth
 from .provider.qoder.client import QoderClient
 from .provider.qoder.events import detect_realm_from_domain
 from .provider.raccoon.client import RaccoonClient, RaccoonProvider
+from .provider.relay import RelayPoolStore, set_relay_resolver
 from .provider.trae.client import TraeClient, TraeProvider
 from .provider.zen.client import ZenClient, ZenProvider
 from .runtime_settings import load_runtime_settings
@@ -152,6 +155,8 @@ from .tasks.otlp_export import OtlpExportTask
 from .tasks.pacer import Pacer
 from .tasks.runner import build_runner
 from .tasks.upstream_status import UpstreamStatusTask
+from .tunnel.manager import TunnelManager
+from .tunnel.store import TunnelStore
 from .upstream_status import UpstreamStatusStore
 from .version import app_version
 from .webapp import limits as _limits
@@ -455,7 +460,9 @@ def build_app(settings: Settings | None = None, *, providers: dict | None = None
     apply_schema(db.connect())
     # 运行时配置覆盖层：热更键读 DB 覆盖值，其余透明委托给 env 快照。
     # 必须在 apply_schema 之后构造——新库的 runtime_settings 表由上面建好。
-    runtime = load_runtime_settings(config, RuntimeSettingsRepository(db))
+    # repo 同时供代理池 / Tunnel 直读直写（两者是结构化 JSON / 密文，不走热更白名单）。
+    settings_repo = RuntimeSettingsRepository(db)
+    runtime = load_runtime_settings(config, settings_repo)
     cipher = CredentialCipher(config.app_secret)
     credentials = CredentialRepository(db, cipher)
     growth_events = GrowthRepository(db)
@@ -533,6 +540,18 @@ def build_app(settings: Settings | None = None, *, providers: dict | None = None
     proxies = parse_provider_proxies(config.provider_proxies, KNOWN_PROVIDERS)
     # 出口 IP 粘性：池按凭证 id 稳定分配，装配期一次设定（连接池已建，改值需重启）
     set_proxy_pool(CredentialProxyPool(parse_proxy_pool(config.credential_proxy_pool)))
+    # 代理池（Cloudflare Relay 中转）：条目/绑定存 runtime_settings，发送层按
+    # 「凭证→渠道→绑定」现解析（纯内存快照）；管理台改完下一个请求即生效。
+    relay_store = RelayPoolStore(settings_repo, credentials)
+    relay_store.refresh()
+    set_relay_resolver(relay_store.resolve)
+    # Cloudflare Tunnel（cloudflared 进程守护）：配置落库由管理端点写，
+    # 进程在 lifespan 里按开关拉起/停止。
+    tunnel_manager = TunnelManager(
+        TunnelStore(settings_repo, cipher,
+                    default_token=config.cf_tunnel_token,
+                    default_enabled=config.cf_tunnel_enabled),
+        config.data_dir, mirror=config.cf_tunnel_mirror or None)
     registry = providers if providers is not None else {
         "trae": TraeProvider(
             client=TraeClient(proxy=proxies.get("trae")), pacer=chat_pacer),
@@ -683,7 +702,24 @@ def build_app(settings: Settings | None = None, *, providers: dict | None = None
                                      scheduler=Scheduler(
                                          expiry_window=lambda: runtime.quota_expiry_window_seconds,
                                          secondary_expiry_window=lambda: (
-                                             runtime.quota_expiry_secondary_window_seconds)),
+                                             runtime.quota_expiry_secondary_window_seconds),
+                                         # 冷却时长热更（「任务与配置 → 冷却时长」）：
+                                         # 每次错误判定现读，改完下一个错误即生效。
+                                         plan_cooldown=lambda: runtime.plan_cooldown_seconds,
+                                         soft_cooldown=lambda: runtime.soft_cooldown_seconds,
+                                         other_cooldown=lambda: runtime.other_cooldown_seconds,
+                                         restricted_cooldown=lambda: (
+                                             runtime.restricted_cooldown_seconds),
+                                         restricted_cooldown_max=lambda: (
+                                             runtime.restricted_cooldown_max_seconds),
+                                         model_cooldown=lambda: runtime.model_cooldown_seconds,
+                                         model_cooldown_max=lambda: (
+                                             runtime.model_cooldown_max_seconds),
+                                         concurrency_cooldown=lambda: (
+                                             runtime.concurrency_cooldown_seconds),
+                                         concurrency_cooldown_max=lambda: (
+                                             runtime.concurrency_cooldown_max_seconds),
+                                         credit_reset_hour=lambda: runtime.credit_reset_hour),
                                      default_model=lambda: runtime.default_model,
                                      stats=stats_collector,
                                      max_auto_continues=config.auto_continue_max,
@@ -883,6 +919,14 @@ def build_app(settings: Settings | None = None, *, providers: dict | None = None
         # 关闭期先收尾这个 task 再停循环（见 finally）：否则 stop 先跑，
         # start 又把周期循环建出来，那些循环没人 cancel。
         app_.state.task_runner_start_task = asyncio.create_task(runner.start())
+        # Cloudflare Tunnel 按持久开关拉起 cloudflared（放后台：首次可能要下载
+        # 二进制，最慢 3 分钟，内联会让 lifespan startup 卡住 → 探针误判）。
+        async def _tunnel_boot() -> None:
+            try:
+                await tunnel_manager.sync()
+            except Exception:  # noqa: BLE001 - 启动失败不拖垮服务，界面可见错误
+                logger.warning("Cloudflare Tunnel 启动装配失败", exc_info=True)
+        app_.state.tunnel_boot_task = asyncio.create_task(_tunnel_boot())
         # 预热模型别名表：放后台跑（force 绕过 TTL）。
         # 不内联 await 的原因：zen 免费层探活最慢的模型可占十几秒，内联会让应用
         # 在这段时间里不响应 /health，容器存活探针可能误判；动态拉取失败仅记日志。
@@ -909,6 +953,14 @@ def build_app(settings: Settings | None = None, *, providers: dict | None = None
                 with contextlib.suppress(Exception):
                     await start_task
             await runner.stop()
+            # Tunnel 守护先于各 provider 关闭：停止 cloudflared 子进程，
+            # 不再重启（崩溃恢复任务一并取消）。
+            tunnel_boot = getattr(app_.state, "tunnel_boot_task", None)
+            if tunnel_boot is not None and not tunnel_boot.done():
+                tunnel_boot.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await tunnel_boot
+            await tunnel_manager.shutdown()
             warmup = getattr(app_.state, "model_warmup_task", None)
             if warmup is not None and not warmup.done():
                 warmup.cancel()
@@ -1034,6 +1086,8 @@ def build_app(settings: Settings | None = None, *, providers: dict | None = None
         model_list_cache=model_cache,
         schedule_probe=schedule_probe,
         inflight=inflight_guard,
+        relay=relay_store,
+        tunnel=tunnel_manager,
     )
     app.state.services = services
 
@@ -1093,6 +1147,9 @@ def build_app(settings: Settings | None = None, *, providers: dict | None = None
     app.include_router(admin_billing.create_router(services))
     app.include_router(admin_users.create_router(services))
     app.include_router(admin_audit.create_router(services))
+    # 代理池（Cloudflare Relay 中转）与 Tunnel 管理（admin 运维面）
+    app.include_router(admin_relay.create_router(services))
+    app.include_router(admin_tunnel.create_router(services))
     # 服务端日志页（E3）：admin-only 只读视图；`log_buffer_lines=0` 时回 404。
     app.include_router(logs.create_router(services))
     app.include_router(activate.create_router(services))

@@ -19,6 +19,7 @@ import type {
   CredentialLimitsInput,
   CredentialsResponse,
   CreditEvent,
+  CredentialBatchExportResult,
   GrowthEvent,
   GrowthRunResult,
   ActivityReportResult,
@@ -48,6 +49,17 @@ import type {
   UpstreamStatusResponse,
   UserStats,
   UserRow,
+  RelayBindingsResponse,
+  RelayDeployInput,
+  RelayDeployResult,
+  RelayProxyEntryView,
+  RelayProxyPoolResponse,
+  RelayRegionInput,
+  RelayRegionResult,
+  RelayTestResult,
+  RelayUpsertInput,
+  TunnelPatch,
+  TunnelState,
 } from "./types";
 import { isSessionExpiry, notifyUnauthorized } from "./unauthorized";
 
@@ -238,6 +250,15 @@ export const api = {
   audit: (filters: { actor?: string; action?: string; limit?: number; offset?: number;
                      sort?: string; order?: string } = {}) =>
     request<AuditResponse>(`/api/audit${query(filters)}`),
+  /** 清空审计流水（admin）：真删除、不可恢复；表里会留一条 audit.clear。 */
+  clearAudit: () => request<{ ok: boolean; cleared: number }>("/api/audit", {
+    method: "DELETE",
+  }),
+  /** 清空服务端日志（admin）：内存环与落库表一起清，真删除、不可恢复。 */
+  clearLogs: () =>
+    request<{ ok: boolean; memory: number; persisted: number }>("/api/logs", {
+      method: "DELETE",
+    }),
   // ---------------------------------------------------------------- 凭证
   credentials: (sort?: string, order?: string) =>
     request<CredentialsResponse>(`/api/credentials${query({ sort, order })}`),
@@ -280,6 +301,32 @@ export const api = {
       throw new ApiError(response.status, "export_failed", message);
     }
     return { blob: await response.blob() };
+  },
+  /**
+   * 全池批量导出（admin）：后端回 `{items, failed, count}`，前端只把 `items`
+   * 写成顶层数组，字段与「批量导入」既有契约逐字一致，落盘后可直接再导入。
+   * `failed`/`count` 只用于界面提示，不能混进条目数组。
+   */
+  exportCredentials: async () => {
+    const response = await fetch("/api/credentials/batch-export", {
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      let message = `导出失败（HTTP ${response.status}）`;
+      try {
+        const body = await response.json();
+        if (body?.error?.message) message = body.error.message;
+      } catch {
+        // 非 JSON 错误体：保留 HTTP 状态提示
+      }
+      throw new ApiError(response.status, "export_failed", message);
+    }
+    const result = JSON.parse(await response.text()) as CredentialBatchExportResult;
+    const payload = JSON.stringify(result.items, null, 2);
+    return {
+      ...result,
+      blob: new Blob([payload], { type: "application/json" }),
+    };
   },
   // ---------------------------------------------------------------- 备份
   backups: () => request<BackupListResponse>("/api/backups"),
@@ -428,6 +475,8 @@ export const api = {
       `/api/api-keys${query({ sort, order, limit, offset })}`),
   createApiKey: (payload: {
     name: string;
+    /** 自定义 Key（可选）：留空 = 后端自动生成；可见 ASCII、无空格、全局唯一。 */
+    key?: string;
     provider_binding?: string;
     allowed_ips?: string;
     allowed_models?: string;
@@ -541,6 +590,54 @@ export const api = {
       truncated: response.headers.get("X-Export-Truncated") === "1",
     };
   },
+
+  // ------------------------------------------------------ 代理池（Relay 中转）
+  /** 列表（operator 可读，已脱敏：不含 cf_api_token_enc / cf_account_id）。 */
+  proxyPools: () => request<RelayProxyPoolResponse>("/api/proxy-pool"),
+  /** 新增 / 编辑（upsert by id，admin）。 */
+  saveProxyPool: (id: string, body: RelayUpsertInput) =>
+    request<{ ok: boolean; item: RelayProxyEntryView }>(
+      `/api/proxy-pool/${encodeURIComponent(id)}`,
+      { method: "POST", ...json(body) },
+    ),
+  /** 删除（admin，幂等）。 */
+  deleteProxyPool: (id: string) =>
+    request<{ ok: boolean }>(`/api/proxy-pool/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  /** 启停（admin）。 */
+  toggleProxyPool: (id: string, enabled: boolean) =>
+    request<{ ok: boolean; item: RelayProxyEntryView }>(
+      `/api/proxy-pool/${encodeURIComponent(id)}/toggle`,
+      { method: "POST", ...json({ enabled }) },
+    ),
+  /** 单条连通性测试（admin）：失败不是 HTTP 错误，返回 {ok,status,elapsedMs,error?}。 */
+  testProxyPool: (id: string) =>
+    request<RelayTestResult>(`/api/proxy-pool/${encodeURIComponent(id)}/test`,
+                             { method: "POST" }),
+  /** 一键部署 Relay Worker（admin；Token 仅当次提交，成功后立即清空表单）。 */
+  deployRelay: (body: RelayDeployInput) =>
+    request<RelayDeployResult>("/api/relay/deploy", { method: "POST", ...json(body) }),
+  /** 切换地区（admin；凭据可留空复用已记住凭据）。 */
+  updateRelayRegion: (project: string, body: RelayRegionInput) =>
+    request<RelayRegionResult>(`/api/relay/${encodeURIComponent(project)}/region`,
+                               { method: "POST", ...json(body) }),
+  /** 绑定读（viewer 可读，只含 {provider: proxy_id}，无任何 URL）。 */
+  relayBindings: () => request<RelayBindingsResponse>("/api/relay/bindings"),
+  /** 绑定写（operator；空串 = 解绑直连）。 */
+  setRelayBinding: (provider: string, proxy_id: string) =>
+    request<{ ok: boolean; bindings: Record<string, string> }>(
+      `/api/relay/bindings/${encodeURIComponent(provider)}`,
+      { method: "PUT", ...json({ proxy_id }) },
+    ),
+
+  // ------------------------------------------------------------ Cloudflare Tunnel
+  tunnel: () => request<TunnelState>("/api/tunnel"),
+  updateTunnel: (patch: TunnelPatch) =>
+    request<TunnelState>("/api/tunnel", { method: "PUT", ...json(patch) }),
+  restartTunnel: () => request<TunnelState>("/api/tunnel/restart", { method: "POST" }),
+  refreshTunnelBinary: () =>
+    request<TunnelState>("/api/tunnel/binary/refresh", { method: "POST" }),
 };
 
 function query(params: Record<string, string | number | boolean | undefined>): string {

@@ -36,6 +36,16 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
+# 系统保留键：代理池 / Tunnel 等结构化存储写入 runtime_settings 表（经
+# RuntimeSettingsRepository 直读直写），不走热更白名单。reload 时静默跳过。
+# 与 `provider.relay`（RELAY_POOL_KEY / RELAY_BINDINGS_KEY）和
+# `tunnel.store`（TUNNEL_TOKEN_KEY / TUNNEL_ENABLED_KEY）的字面量保持一致
+# （此处不跨层 import，避免引入 provider 依赖；改名时两处必须同步）。
+_RESERVED_SETTINGS_KEYS = frozenset({
+    "relay_proxy_pool", "relay_provider_bindings",
+    "cf_tunnel_token_enc", "cf_tunnel_enabled",
+})
+
 
 @dataclass(frozen=True)
 class HotSetting:
@@ -71,6 +81,7 @@ GATEWAY_GROUPS: tuple[tuple[str, str], ...] = (
     ("stream_thinking", "流式与思考"),
     ("gateway_control", "网关与计费"),
     ("affinity", "选号与会话"),
+    ("cooldown", "冷却时长"),
     ("privacy", "出站隐私"),
     ("chat_throttle", "聊天节流"),
     ("codearts_throttle", "CodeArts 节流"),
@@ -165,6 +176,42 @@ HOT_SETTINGS: tuple[HotSetting, ...] = (
                "另有 600s TTL 兜底漏释放。在途数同时是选号的负载键：并发请求"
                "按「在途最少优先」摊到空闲号（0 = 不限时也照常计数）。",
                minimum=0, group="affinity"),
+    # ---------------- 冷却时长（错误分类对应的凭证冷却，改完下一错误即生效）。
+    # 生效面只有「上游没有点名恢复时刻」的冷却：上游给了 Retry-After 时仍按
+    # 上游值（钳在本服务的 24h 上限内），这是跟随上游的约定，不随本组配置变。
+    HotSetting("soft_cooldown_seconds", int, "软冷却（秒）",
+               "SOFT 类错误（瞬态限流/风控文案）的账号冷却时长，不累计错误次数。"
+               "0 = 不冷却（不建议：坏号会立刻被反复选中）。",
+               minimum=0, group="cooldown"),
+    HotSetting("other_cooldown_seconds", int, "其他错误冷却（秒）",
+               "连续错误达到阈值（默认 3 次）后的账号冷却时长。0 = 不冷却。",
+               minimum=0, group="cooldown"),
+    HotSetting("plan_cooldown_seconds", int, "权益耗尽冷却（秒）",
+               "PLAN 类错误（套餐/权益耗尽）的账号冷却时长，默认 12 小时，"
+               "清空错误计数。0 = 不冷却。", minimum=0, group="cooldown"),
+    HotSetting("restricted_cooldown_seconds", int, "风控冷却起步（秒）",
+               "RESTRICTED 类错误（账号被上游风控限制）的冷却起步时长，"
+               "按命中次数从该值翻倍。", minimum=60, group="cooldown"),
+    HotSetting("restricted_cooldown_max_seconds", int, "风控冷却封顶（秒）",
+               "风控指数退避的封顶时长，默认 7 天。",
+               minimum=60, group="cooldown"),
+    HotSetting("credit_reset_hour", int, "余额恢复时刻（北京时间，时）",
+               "CREDIT 类错误（余额不足）冷却到**次日该整点**（等签到恢复），"
+               "0–23。默认 4，与签到任务的日界同源。",
+               minimum=0, maximum=23, group="cooldown"),
+    HotSetting("model_cooldown_seconds", int, "模型级冷却起步（秒）",
+               "MODEL 类错误（模型级限流）的 (凭证, 模型) 冷却起步时长，"
+               "按命中次数翻倍。", minimum=0, group="cooldown"),
+    HotSetting("model_cooldown_max_seconds", int, "模型级冷却封顶（秒）",
+               "模型级冷却的封顶时长，默认 2 小时。",
+               minimum=0, group="cooldown"),
+    HotSetting("concurrency_cooldown_seconds", int, "并发打满冷却起步（秒）",
+               "CONCURRENCY 类错误（在途/频率打满）的起步冷却，默认 60 秒"
+               "（排空即恢复，快速试错）。", minimum=0, group="cooldown"),
+    HotSetting("concurrency_cooldown_max_seconds", int, "并发打满冷却封顶（秒）",
+               "并发链式退避的封顶时长，默认 5 分钟；显式设置会覆盖渠道分档"
+               "（默认档 5min、小浣熊长窗口档 30min）。",
+               minimum=0, group="cooldown"),
     HotSetting("growth_irreversible_actions", bool, "成长中心不可逆动作",
                "是否允许抽奖 / 连登兑换 / 开盲盒 / 消耗补登卡。关闭后仍会领取"
                "旅行礼物与任务奖励。", task="growth"),
@@ -688,9 +735,16 @@ class RuntimeSettings:
     # ------------------------------------------------------------- 覆盖层
 
     def reload(self) -> None:
-        """从 DB 重读覆盖值；非法/未知行跳过并记日志（不让坏行拖垮服务）。"""
+        """从 DB 重读覆盖值；非法/未知行跳过并记日志（不让坏行拖垮服务）。
+
+        系统保留键（代理池 / Tunnel 等结构化存储，经 repo 直读直写、不走热更
+        白名单，见 `provider.relay` / `tunnel.store`）在此静默跳过：它们不是
+        标量配置，出现在表里是正常状态，不该每次 reload 都刷一条告警。
+        """
         loaded: dict[str, str] = {}
         for key, raw in self._store.load().items():
+            if key in _RESERVED_SETTINGS_KEYS:
+                continue
             try:
                 parse_value(key, raw)
             except InvalidSetting as error:
@@ -1120,6 +1174,48 @@ class RuntimeSettings:
     @property
     def backup_interval_minutes(self) -> int:
         return int(self.get("backup_interval_minutes"))
+
+    # ------------------------------------------------------------- 冷却时长
+
+    @property
+    def soft_cooldown_seconds(self) -> int:
+        return int(self.get("soft_cooldown_seconds"))
+
+    @property
+    def other_cooldown_seconds(self) -> int:
+        return int(self.get("other_cooldown_seconds"))
+
+    @property
+    def plan_cooldown_seconds(self) -> int:
+        return int(self.get("plan_cooldown_seconds"))
+
+    @property
+    def restricted_cooldown_seconds(self) -> int:
+        return int(self.get("restricted_cooldown_seconds"))
+
+    @property
+    def restricted_cooldown_max_seconds(self) -> int:
+        return int(self.get("restricted_cooldown_max_seconds"))
+
+    @property
+    def credit_reset_hour(self) -> int:
+        return int(self.get("credit_reset_hour"))
+
+    @property
+    def model_cooldown_seconds(self) -> int:
+        return int(self.get("model_cooldown_seconds"))
+
+    @property
+    def model_cooldown_max_seconds(self) -> int:
+        return int(self.get("model_cooldown_max_seconds"))
+
+    @property
+    def concurrency_cooldown_seconds(self) -> int:
+        return int(self.get("concurrency_cooldown_seconds"))
+
+    @property
+    def concurrency_cooldown_max_seconds(self) -> int:
+        return int(self.get("concurrency_cooldown_max_seconds"))
 
     @property
     def backup_keep(self) -> int:

@@ -7,6 +7,7 @@ import {
   DatabaseBackup,
   FileTerminal,
   KeyRound,
+  Network,
   RadioTower,
   Receipt,
   ScrollText,
@@ -54,6 +55,8 @@ export const ADMIN_NAV: NavItem[] = [
   { to: "/logs", label: "服务端日志", icon: FileTerminal },
   { to: "/alerts", label: "运维告警", icon: BellRing, badgeKey: "alerts" },
   { to: "/backups", label: "备份与恢复", icon: DatabaseBackup },
+  // 代理池：admin-only（部署含 Cloudflare API Token，relay URL 即凭据）。
+  { to: "/proxy-pools", label: "代理池", icon: Network },
   { to: "/upstream", label: "上游状态", icon: RadioTower, operator: true, badgeKey: "upstream" },
   { to: "/billing", label: "月度账单", icon: Receipt, operator: true },
   { to: "/models", label: "模型列表", icon: Boxes, operator: true,

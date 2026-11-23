@@ -482,6 +482,91 @@ export interface TosRisk {
   basis: string;
 }
 
+// ============================================================ 代理池（Relay 中转）
+export interface RelayProxyEntryView {
+  id: string;
+  name: string;
+  type: "relay";
+  url: string;
+  enabled: boolean;
+  /** 空串 = 自动。 */
+  region: string;
+  /** = !!cf_api_token_enc；前端永远拿不到密文本身。 */
+  credentials_saved: boolean;
+  created_at: string;
+  updated_at: string;
+}
+export interface RelayProxyPoolResponse {
+  items: RelayProxyEntryView[];
+}
+/** 绑定只读：仅 {provider: proxy_id}，不含任何 relay URL / 凭据，viewer 可阅。 */
+export interface RelayBindingsResponse {
+  bindings: Record<string, string>;
+}
+export interface RelayTestResult {
+  ok: boolean;
+  status: number;
+  elapsedMs: number;
+  error?: string;
+}
+export interface RelayUpsertInput {
+  name: string;
+  url: string;
+  region?: string;
+  enabled?: boolean;
+}
+export interface RelayDeployInput {
+  accountId: string;
+  apiToken: string;
+  projectName?: string;
+  region?: string;
+  rememberCredentials?: boolean;
+}
+export interface RelayDeployResult {
+  deployUrl: string;
+  region: string;
+  credentialsSaved: boolean;
+}
+export interface RelayRegionInput {
+  region?: string;
+  accountId?: string;
+  apiToken?: string;
+  rememberCredentials?: boolean;
+}
+export interface RelayRegionResult {
+  region: string;
+  credentialsSaved: boolean;
+}
+
+// ============================================================ Cloudflare Tunnel
+export interface TunnelState {
+  supported: boolean;
+  enabled: boolean;
+  status: "disabled" | "stopped" | "downloading" | "starting" | "running"
+    | "restarting" | "error";
+  token_saved: boolean;
+  token_error: boolean;
+  binary: { path: string; source: "system" | "managed" | "none"; version: string | null };
+  pid: number | null;
+  started_at: number | null;
+  restart_count: number;
+  last_error: string | null;
+  logs: Array<{ at: number; level: "info" | "out" | "err"; line: string }>;
+  protocol: string;
+}
+export interface TunnelPatch {
+  /** 留空 = 保留原令牌；null = 清除。 */
+  token?: string | null;
+  enabled?: boolean;
+}
+
+/** 批量导出（admin）：items 与「批量导入」条目同形，可原样再导入。 */
+export interface CredentialBatchExportResult {
+  items: BatchImportEntry[];
+  failed: { id: string; reason: string }[];
+  count: number;
+}
+
 /** 账单里的一行（按人 / 按 Key 共用形状；Key 行多 `key_name`）。 */
 export interface BillingRow {
   username?: string | null;

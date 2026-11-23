@@ -87,19 +87,48 @@ describe("AuditPage", () => {
     });
   });
 
-  it("清空按钮重置全部筛选", async () => {
+  it("重置按钮清筛选不删数据", async () => {
     const spy = stubFetch(auditPayload([EVENT]));
     renderPage(<AuditPage />, { username: "root", is_admin: true });
     await settle();
 
     await userEvent.selectOptions(screen.getByTestId("audit-action"), "user_disable");
-    await userEvent.click(screen.getByTestId("audit-clear"));
+    await userEvent.click(screen.getByTestId("audit-reset"));
     await waitFor(() => {
       const urls = spy.mock.calls.map(([url]) => String(url));
-      // 清空后不再带 action 过滤
+      // 重置后不再带 action 过滤
       expect(urls.at(-1)).not.toContain("action=");
     });
     expect(screen.getByTestId("audit-action")).toHaveValue("");
+    // 重置不触发 DELETE：数据仍在
+    expect(spy.mock.calls.some(([, init]) => String(init?.method) === "DELETE")).toBe(false);
+  });
+
+  it("清空记录：两段确认后 DELETE /api/audit，重置筛选", async () => {
+    const spy = stubFetch(auditPayload([EVENT]));
+    renderPage(<AuditPage />, { username: "root", is_admin: true });
+    await settle();
+
+    // 第一次点只进入确认态，不发请求
+    await userEvent.click(screen.getByTestId("audit-clear"));
+    expect(screen.getByTestId("audit-clear")).toHaveTextContent("确认清空？");
+    expect(spy.mock.calls.some(([, init]) => String(init?.method) === "DELETE")).toBe(false);
+
+    // 再点才真删
+    await userEvent.click(screen.getByTestId("audit-clear"));
+    await waitFor(() => {
+      expect(spy.mock.calls.some(([, init]) =>
+        String(init?.method) === "DELETE"
+        && String(init?.body ?? "") === "" )).toBe(true);
+    });
+    // 清空后自动重取列表（否则页面停在旧数据上）
+    await waitFor(() => {
+      const urls = spy.mock.calls.map(([url]) => String(url));
+      expect(urls.at(-1)).toContain("/api/audit");
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("audit-clear")).toHaveTextContent("清空记录");
+    });
   });
 
   it("分页：满页时可翻下一页，回退禁用上一页", async () => {

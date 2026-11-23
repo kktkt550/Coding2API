@@ -7,6 +7,7 @@ import type {
   NavBadges,
   StatsEventFilters,
   StatsMetric,
+  TunnelPatch,
   UsageEventRow,
 } from "../api/types";
 /** Query key 约定：所有管理数据以 ["admin", username, ...] 开头。 */
@@ -369,6 +370,95 @@ export function useStatsEventStream(options: {
   }, [enabled, username, provider, model, credentialId, ok]);
 
   return status;
+}
+
+// ------------------------------------------------------ 代理池（Relay 中转）
+export function useProxyPools(username?: string) {
+  return useQuery({
+    queryKey: adminKey(username, "proxy-pools"),
+    queryFn: api.proxyPools,
+    // 代理池是配置型数据：只由写操作显式失效缓存（useProxyPoolMutation），
+    // 不做挂载 / 聚焦 / 重连自动重取。失败查询一次性取数即可（配置不常变）。
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
+    retryOnMount: false,
+    staleTime: 30_000,
+    gcTime: Infinity,
+  });
+}
+
+export function useRelayBindings(username?: string) {
+  return useQuery({
+    queryKey: adminKey(username, "relay-bindings"),
+    queryFn: api.relayBindings,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
+    retryOnMount: false,
+    staleTime: 30_000,
+    gcTime: Infinity,
+  });
+}
+
+/** 代理池写操作统一失效：条目与绑定都源自同一份池数据。 */
+export function useProxyPoolMutation<TArgs, TResult>(
+  mutationFn: (args: TArgs) => Promise<TResult>,
+  username?: string,
+) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: adminKey(username, "proxy-pools") });
+      void client.invalidateQueries({ queryKey: adminKey(username, "relay-bindings") });
+    },
+  });
+}
+
+/** 渠道分组绑定写：成功后失效绑定 key（凭证页下拉立即反映）。 */
+export function useRelayBindingMutation(username?: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { provider: string; proxy_id: string }) =>
+      api.setRelayBinding(args.provider, args.proxy_id),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: adminKey(username, "relay-bindings") });
+    },
+  });
+}
+
+// ------------------------------------------------------------ Cloudflare Tunnel
+export function useTunnel(username?: string, refetchIntervalMs = 15_000) {
+  return useQuery({
+    queryKey: adminKey(username, "tunnel"),
+    queryFn: api.tunnel,
+    refetchInterval: refetchIntervalMs,
+  });
+}
+
+function useTunnelInvalidation(username?: string) {
+  const client = useQueryClient();
+  return () => client.invalidateQueries({ queryKey: adminKey(username, "tunnel") });
+}
+
+export function useUpdateTunnel(username?: string) {
+  const invalidate = useTunnelInvalidation(username);
+  return useMutation({
+    mutationFn: (patch: TunnelPatch) => api.updateTunnel(patch),
+    onSuccess: invalidate,
+  });
+}
+
+export function useTunnelAction(username?: string) {
+  const invalidate = useTunnelInvalidation(username);
+  return useMutation({
+    mutationFn: (action: "restart" | "refresh") =>
+      action === "restart" ? api.restartTunnel() : api.refreshTunnelBinary(),
+    onSuccess: invalidate,
+  });
 }
 
 export { useQueryClient };

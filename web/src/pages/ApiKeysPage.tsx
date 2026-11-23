@@ -75,6 +75,8 @@ export function ApiKeysPage() {
     setPage(0);
   };
   const [name, setName] = useState("");
+  // 自定义 Key（留空自动生成）：后端校验可见 ASCII、无空格、全局唯一
+  const [customKey, setCustomKey] = useState("");
   const [binding, setBinding] = useState("");
   const [allowedIps, setAllowedIps] = useState("");
   const [allowedModels, setAllowedModels] = useState("");
@@ -126,6 +128,8 @@ export function ApiKeysPage() {
       const quotaPayload = quotaInput(quota);
       const result = await api.createApiKey({
         name,
+        // 留空不带字段：后端自动生成，避免把空串当成「自定义空 Key」
+        ...(customKey.trim() ? { key: customKey.trim() } : {}),
         provider_binding: binding,
         allowed_ips: allowedIps.trim(),
         allowed_models: allowedModels.trim(),
@@ -136,6 +140,7 @@ export function ApiKeysPage() {
       });
       setCreated(result);
       setName("");
+      setCustomKey("");
       setBinding("");
       setAllowedIps("");
       setAllowedModels("");
@@ -448,6 +453,21 @@ export function ApiKeysPage() {
                     data-testid="key-name"
                     placeholder="例如 laptop"
                     onChange={(event) => setName(event.target.value)}
+                  />
+                </Field>
+                <Field
+                  label="自定义 Key（留空自动生成）"
+                  htmlFor="key-custom-input"
+                  hint="只能包含可见 ASCII 字符、不能有空格（Key 要放进 Bearer 头）；全局唯一，撞库时后端会报错。"
+                >
+                  <Input
+                    id="key-custom-input"
+                    value={customKey}
+                    data-testid="key-custom"
+                    placeholder="例如 sk-laptop-2026，留空则随机生成"
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) => setCustomKey(event.target.value)}
                   />
                 </Field>
                 <Field label="渠道绑定" htmlFor="key-binding-select">

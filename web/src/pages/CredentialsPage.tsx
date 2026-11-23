@@ -1,4 +1,4 @@
-import { Database, Plus, Search, Upload } from "lucide-react";
+import { Database, Download, Plus, Search, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -104,6 +104,8 @@ export function CredentialsPage() {
   // 几点、领了多少、上游回了什么码」，正是「显示成功却没加积分」类问题的证据。
   const [checkinLog, setCheckinLog] = useState<CheckinLogState | null>(null);
 
+  // 多选/批量已由上方状态承接；批量导出是独立的低频一次性动作
+  const [exporting, setExporting] = useState(false);
   const credentials = data?.credentials ?? [];
   // OpenCode Zen 无凭证：池里只有一条虚拟占位行，正常由服务启动时种子。
   // 用户在凭证页删除后不会自动回来，这里给一个一键补回的入口（收在
@@ -222,6 +224,40 @@ export function CredentialsPage() {
     client.invalidateQueries({ queryKey: ["admin"] }),
     client.invalidateQueries({ queryKey: ["playground-models"] }),
   ]);
+
+  // 批量导出（admin）：后端回 `{items, failed, count}`，前端只把 `items` 写成
+  // 顶层数组，字段与「批量导入」既有契约逐字一致，落盘后可直接再导入。
+  // 空池不下载空文件。导出的是**明文凭证**，仅 admin 可见入口 + 后端审计。
+  const exportAll = () =>
+    void (async () => {
+      if (exporting) return;
+      setExporting(true);
+      try {
+        const { blob, count, failed } = await api.exportCredentials();
+        if (count === 0) {
+          showNotice(failed.length
+            ? `没有可导出的凭证（${failed.length} 条解密失败）`
+            : "凭证池为空，没有可导出的凭证");
+          return;
+        }
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download =
+          `coding2api-credentials-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.json`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+        showNotice(failed.length
+          ? `已导出 ${count} 条，其中 ${failed.length} 条因解密失败未包含（含明文令牌，请妥善保管）`
+          : `已导出 ${count} 条凭证 JSON（含明文令牌，请妥善保管）`);
+      } catch (caught) {
+        showError(errorText(caught, "导出凭证失败"));
+      } finally {
+        setExporting(false);
+      }
+    })();
 
   // 流水抽屉内排序：改排序需重新取数（后端排），并保持方向直觉
   // （时间/数值列首点降序，来源首点升序）。
@@ -378,6 +414,18 @@ export function CredentialsPage() {
         title="凭证池"
         action={canWrite && (
           <div className="flex items-center gap-2">
+            {session.is_admin && (
+              <Button
+                size="sm"
+                variant="ghost"
+                data-testid="batch-export"
+                disabled={busy || exporting}
+                title="导出全池凭证为 JSON（含明文令牌，可原样再导入；操作会记审计；仅管理员）"
+                onClick={exportAll}
+              >
+                <Download className="size-4" /> {exporting ? "导出中…" : "批量导出"}
+              </Button>
+            )}
             <Button
               size="sm"
               variant="ghost"

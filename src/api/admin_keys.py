@@ -14,6 +14,7 @@ from ..audit.actions import (
     ACTION_API_KEY_UPDATE,
 )
 from ..auth.access import normalize_allowed_ips, normalize_allowed_models
+from ..auth.api_key import digest_api_key
 from ..compat.openai.request import InvalidRequest
 from ..db.key_update import EDITABLE_COLUMNS, update_api_key_fields
 from ..engine.limits import day_start
@@ -204,18 +205,31 @@ def create_router(services: Services) -> APIRouter:
         allowed_models = _parse_allowed_models(payload.get("allowed_models"))
         expires_at = _parse_expires_at(payload.get("expires_at"))
         quota = _parse_quota(payload.get("quota"))
+        # 自定义 Key（可选）：留空 = 自动生成。不限制长度（用户自己的选择），
+        # 但字符集必须限定可见 ASCII 且不含空格——Key 要放进 `Authorization: Bearer`
+        # 头传输，非 latin-1 字符（如中文）在标准 HTTP 客户端里连请求都发不出去。
+        # 另做全局唯一预检：key_digest 有 UNIQUE 约束，撞车时 sqlite 抛的是底层
+        # 错误，先查一次把撞车变成可读的 400。
+        custom_key = str(payload.get("key") or "").strip()
+        if custom_key:
+            if not all(0x21 <= ord(ch) <= 0x7E for ch in custom_key):
+                raise InvalidRequest(
+                    "custom key may only contain printable ASCII characters without spaces")
+            if api_keys.digest_exists(digest_api_key(custom_key)):
+                raise InvalidRequest("custom key already exists")
         created = api_keys.create(
             principal.username, str(payload.get("name") or ""),
             provider_binding=binding, allowed_ips=allowed_ips,
             allowed_models=allowed_models, expires_at=expires_at,
-            quota=quota_text(quota))
+            quota=quota_text(quota), key=custom_key or None)
         # 发 Key 是「造了一把进网关的凭据」，必须留痕：明文只返回这一次，
         # 事后只能靠审计行回答「这把能刷全模型的 Key 是谁建的、什么时候」。
         services.audit.record(
             actor=principal.username, action=ACTION_API_KEY_CREATE,
             target=created["id"],
             detail=_policy_detail(str(payload.get("name") or ""), binding,
-                                  allowed_ips, allowed_models, expires_at, quota),
+                                  allowed_ips, allowed_models, expires_at, quota)
+            + ("；自定义 Key" if custom_key else ""),
             ip=request_ip(request, services.settings))
         return created          # 明文只在此返回一次
 

@@ -216,6 +216,13 @@ class Settings(BaseSettings):
     # 注意：池成员增删会让部分凭证换桶（改池子本身就是要换出口）。
     credential_proxy_pool: str = ""
 
+    # Cloudflare Tunnel（管理台「代理池/Tunnel」页）：.env 只提供默认值，
+    # 管理台写入的 DB 覆盖值优先（令牌密文落库，前端永不回显）。
+    cf_tunnel_enabled: bool = False
+    cf_tunnel_token: str = ""
+    # cloudflared 下载镜像（GitHub 不可达时填镜像根地址，如 ghproxy 前缀）。
+    cf_tunnel_mirror: str = ""
+
     # 路由与调度
     # 默认模型：六条渠道都已上架 `deepseek-v4.1-flash`（CB / TRAE / CodeArts /
     # codebuddy_intl 同名，Qoder 走别名 `dfmodel`），故默认值取它而不是老模型
@@ -240,6 +247,20 @@ class Settings(BaseSettings):
     # 展示阈值，不参与调度；与 REFRESH_SKEW_HOURS 分开——预刷新窗口是「何时
     # 续期」，这里是「何时该看」。
     token_expiry_warning_seconds: int = 3600
+
+    # 凭证冷却时长（可热更，见 runtime_settings 的「冷却时长」组；默认值与
+    # engine/scheduler.py 的历史常量一致，改了下一个错误判定即生效）。
+    # 注意：上游在 429 里点名恢复时刻（Retry-After）时仍按上游值，不受此组影响。
+    soft_cooldown_seconds: int = 60
+    other_cooldown_seconds: int = 10 * 60
+    plan_cooldown_seconds: int = 12 * 3600
+    restricted_cooldown_seconds: int = 2 * 3600
+    restricted_cooldown_max_seconds: int = 7 * 86400
+    credit_reset_hour: int = 4
+    model_cooldown_seconds: int = 600
+    model_cooldown_max_seconds: int = 2 * 3600
+    concurrency_cooldown_seconds: int = 60
+    concurrency_cooldown_max_seconds: int = 5 * 60
 
     # 后台任务
     # token 预刷新轮询周期（分钟）。真正的「何时续期」由 REFRESH_SKEW_HOURS

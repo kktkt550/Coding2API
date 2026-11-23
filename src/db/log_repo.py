@@ -296,3 +296,14 @@ class LogRepository:
             cursor = conn.execute(
                 "DELETE FROM log_events WHERE ts < ?", (cutoff,))
         return cursor.rowcount
+
+    def clear(self) -> int:
+        """清空全部落库日志（管理端点「清空日志」用）；返回清除的行数。
+
+        只清**已落库**的行：消费者队列里在途的几行会在随后的 flush 时写入
+        ——那是清空动作之后（或之间）产生的日志，保留是正确行为，不算没清干净。
+        持 `_lock` 与消费者线程互斥，避免 DELETE 与批量 INSERT 死锁写库。
+        """
+        with self._lock, self._db.transaction() as conn:
+            cursor = conn.execute("DELETE FROM log_events")
+        return cursor.rowcount

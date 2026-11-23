@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -141,11 +141,12 @@ class ModelCooldown:
     reason: str = "model"
 
 
-def next_credit_reset(now: int) -> int:
+def next_credit_reset(now: int, *, hour: int = CREDIT_RESET_HOUR) -> int:
     """距现在最近的下一个**北京时间** 04:00（余额耗尽等签到恢复）。
 
     凌晨 00:00–04:00 之间返回当天 04:00（此时签到尚未跑，等当天签到即可恢复）；
-    04:00 及之后返回次日 04:00。
+    04:00 及之后返回次日 04:00。`hour` 可注入（管理台热更项
+    `credit_reset_hour`），缺省 = 历史常量 4。
 
     时区固定 Asia/Shanghai，**不看进程本地时区**：签到任务的日界是北京时间
     （见 `tasks/checkin`），两者必须同源。此前用 `time.localtime/mktime`，
@@ -153,17 +154,22 @@ def next_credit_reset(now: int) -> int:
     「签到已恢复但号还在冷却」。
     """
     local = datetime.fromtimestamp(now, _CN_TZ)
-    reset = local.replace(hour=CREDIT_RESET_HOUR, minute=0, second=0, microsecond=0)
-    if local.hour >= CREDIT_RESET_HOUR:
+    reset = local.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if local.hour >= hour:
         reset += timedelta(days=1)
     return int(reset.timestamp())
 
 
-def model_cooldown_duration(hits: int) -> int:
-    """模型级软冷却时长：基数起按命中次数翻倍，封顶 MODEL_COOLDOWN_MAX_SECONDS。"""
+def model_cooldown_duration(hits: int, *, base: int = MODEL_COOLDOWN_SECONDS,
+                            cap: int = MODEL_COOLDOWN_MAX_SECONDS) -> int:
+    """模型级软冷却时长：基数起按命中次数翻倍，封顶 `cap`。
+
+    `base` / `cap` 可注入（管理台热更项 `model_cooldown_seconds` /
+    `model_cooldown_max_seconds`），缺省 = 历史常量。
+    """
     if hits <= 1:
-        return MODEL_COOLDOWN_SECONDS
-    return min(MODEL_COOLDOWN_SECONDS << (hits - 1), MODEL_COOLDOWN_MAX_SECONDS)
+        return base
+    return min(base << (hits - 1), cap)
 
 
 def blocked_backoff_duration(hits: int) -> int:
@@ -179,7 +185,9 @@ def concurrency_cooldown_cap(provider: str | None = None) -> int:
             else CONCURRENCY_COOLDOWN_MAX_SECONDS)
 
 
-def concurrency_cooldown_duration(hits: int, provider: str | None = None) -> int:
+def concurrency_cooldown_duration(hits: int, provider: str | None = None, *,
+                                  base: int = CONCURRENCY_COOLDOWN_SECONDS,
+                                  max_override: int | None = None) -> int:
     """并发/频率打满的冷却时长：首枪 60s，同一命中链按 2 倍升级，按渠道封顶。
 
     `hits` 是该 (凭证, 模型) 命中链内的第几次（链的界定见
@@ -188,9 +196,17 @@ def concurrency_cooldown_duration(hits: int, provider: str | None = None) -> int
     里的渠道是账号×模型的分钟级频率窗口（小浣熊实测恢复中位数 25min），
     封顶 30min——继续 5min 重 armed 只是白撞。两档都低于 MODEL 的 2h：
     这仍是窗口限流，不是额度或账号故障。
+
+    `base` / `max_override` 可注入（管理台热更项 `concurrency_cooldown_seconds`
+    / `concurrency_cooldown_max_seconds`）：热更只替换**默认渠道档**，长窗口
+    渠道的 30min 分档保持独立（那是实测恢复量级，不该被默认档热更顶掉）。
     """
-    cap = concurrency_cooldown_cap(provider)
-    return min(CONCURRENCY_COOLDOWN_SECONDS << max(hits - 1, 0), cap)
+    if provider in CONCURRENCY_LONG_WINDOW_PROVIDERS:
+        cap = CONCURRENCY_LONG_WINDOW_MAX_SECONDS
+    else:
+        cap = CONCURRENCY_COOLDOWN_MAX_SECONDS if max_override is None \
+            else max_override
+    return min(base << max(hits - 1, 0), cap)
 
 
 def clamp_retry_at(retry_at: int | None, now: int, fallback: int) -> tuple[int, bool]:
@@ -300,24 +316,39 @@ class Scheduler:
         *,
         max_rotate: int = MAX_ROTATE,
         err_threshold: int = ERR_THRESHOLD,
-        plan_cooldown: int = PLAN_COOLDOWN_SECONDS,
-        soft_cooldown: int = SOFT_COOLDOWN_SECONDS,
-        other_cooldown: int = OTHER_COOLDOWN_SECONDS,
-        expiry_window: int = EXPIRY_WINDOW_SECONDS,
-        secondary_expiry_window: int = SECONDARY_EXPIRY_WINDOW_SECONDS,
+        plan_cooldown: int | Callable[[], int] = PLAN_COOLDOWN_SECONDS,
+        soft_cooldown: int | Callable[[], int] = SOFT_COOLDOWN_SECONDS,
+        other_cooldown: int | Callable[[], int] = OTHER_COOLDOWN_SECONDS,
+        restricted_cooldown: int | Callable[[], int] = RESTRICTED_COOLDOWN_SECONDS,
+        restricted_cooldown_max: int | Callable[[], int] = RESTRICTED_COOLDOWN_MAX_SECONDS,
+        model_cooldown: int | Callable[[], int] = MODEL_COOLDOWN_SECONDS,
+        model_cooldown_max: int | Callable[[], int] = MODEL_COOLDOWN_MAX_SECONDS,
+        concurrency_cooldown: int | Callable[[], int] = CONCURRENCY_COOLDOWN_SECONDS,
+        concurrency_cooldown_max: int | Callable[[], int] = CONCURRENCY_COOLDOWN_MAX_SECONDS,
+        credit_reset_hour: int | Callable[[], int] = CREDIT_RESET_HOUR,
+        expiry_window: int | Callable[[], int] = EXPIRY_WINDOW_SECONDS,
+        secondary_expiry_window: int | Callable[[], int] = SECONDARY_EXPIRY_WINDOW_SECONDS,
     ) -> None:
         self.max_rotate = max_rotate
         self.err_threshold = err_threshold
-        # 到期窗口可热更：存「取值器」而不是快照，每次选号读当前值。
+        # 冷却时长与到期窗口全部可热更：存「取值器」而不是快照，每次出错
+        # 现读当前值——管理台改完，下一次错误判定即用新时长（既有冷却不动）。
         # expiry_windows 的归一化（主窗口 ≤0 → 次窗口一并归零）必须同步在
         # 读取时做，否则热更把主窗口改成 0、次窗口仍会单独参与排序。
         self._expiry_window = live(expiry_window)
         self._secondary_expiry_window = live(secondary_expiry_window)
         self._cooldowns = {
-            ErrKind.PLAN: plan_cooldown,
-            ErrKind.SOFT: soft_cooldown,
-            ErrKind.OTHER: other_cooldown,
+            ErrKind.PLAN: live(plan_cooldown),
+            ErrKind.SOFT: live(soft_cooldown),
+            ErrKind.OTHER: live(other_cooldown),
         }
+        self._restricted_cooldown = live(restricted_cooldown)
+        self._restricted_cooldown_max = live(restricted_cooldown_max)
+        self._model_cooldown = live(model_cooldown)
+        self._model_cooldown_max = live(model_cooldown_max)
+        self._concurrency_cooldown = live(concurrency_cooldown)
+        self._concurrency_cooldown_max = live(concurrency_cooldown_max)
+        self._credit_reset_hour = live(credit_reset_hour)
         # 整组并发打满的检测状态（进程内，重启即清——429 是瞬态，丢了无害）：
         # (provider, model) → (首中时刻, 已命中的凭证集合)。只在 CONCURRENCY
         # 命中时写，见 `_concurrency_burst`。
@@ -483,8 +514,8 @@ class Scheduler:
             # 而重复撞击已经被封的账号正是上游判「自动化」的证据。
             # 上游给 `Retry-After` 时仍夹在 [本次时长, 24h]。
             level = max(candidate.err_count, 0)
-            duration = min(RESTRICTED_COOLDOWN_SECONDS * (2 ** min(level, 8)),
-                           RESTRICTED_COOLDOWN_MAX_SECONDS)
+            duration = min(self._restricted_cooldown() * (2 ** min(level, 8)),
+                           self._restricted_cooldown_max())
             return ErrorOutcome(
                 cooling_until=self._cooling_until(
                     candidate, kind, now, retry_at, duration, None),
@@ -494,13 +525,14 @@ class Scheduler:
             return ErrorOutcome(
                 cooling_until=self._cooling_until(
                     candidate, kind, now, retry_at,
-                    max(next_credit_reset(now) - now, 0), model),
+                    max(next_credit_reset(now, hour=self._credit_reset_hour()) - now, 0),
+                    model),
                 cooling_kind=kind.value,
                 err_count=0)
         if kind is ErrKind.PLAN:
             return ErrorOutcome(
                 cooling_until=self._cooling_until(
-                    candidate, kind, now, retry_at, self._cooldowns[ErrKind.PLAN], model),
+                    candidate, kind, now, retry_at, self._cooldowns[ErrKind.PLAN](), model),
                 cooling_kind=kind.value,
                 err_count=0)
         if kind in MODEL_SCOPED_KINDS:
@@ -510,7 +542,7 @@ class Scheduler:
                 return ErrorOutcome(
                     cooling_until=self._cooling_until(
                         candidate, kind, now, retry_at,
-                        self._cooldowns[ErrKind.SOFT], None),
+                        self._cooldowns[ErrKind.SOFT](), None),
                     cooling_kind=kind.value,
                     err_count=candidate.err_count)
             if kind is ErrKind.BLOCKED:
@@ -540,11 +572,15 @@ class Scheduler:
                 else:
                     hits = existing.hits + 1 if chained else 1
                     duration = concurrency_cooldown_duration(
-                        hits, candidate.provider)
+                        hits, candidate.provider,
+                        base=self._concurrency_cooldown(),
+                        max_override=self._concurrency_cooldown_max())
             else:
                 hits = existing.hits + 1 if same_reason else 1
                 duration = (blocked_backoff_duration(hits) if kind is ErrKind.BLOCKED
-                            else model_cooldown_duration(hits))
+                            else model_cooldown_duration(
+                                hits, base=self._model_cooldown(),
+                                cap=self._model_cooldown_max()))
             return ErrorOutcome(err_count=candidate.err_count,
                                 model_cooldowns={model: ModelCooldown(
                                     cooling_until=self._cooling_until(
@@ -554,7 +590,7 @@ class Scheduler:
             return ErrorOutcome(
                 cooling_until=self._cooling_until(
                     candidate, kind, now, retry_at,
-                    self._cooldowns[ErrKind.SOFT], model),
+                    self._cooldowns[ErrKind.SOFT](), model),
                 cooling_kind=kind.value,
                 err_count=candidate.err_count)
         count = candidate.err_count + 1
@@ -562,7 +598,7 @@ class Scheduler:
             return ErrorOutcome(
                 cooling_until=self._cooling_until(
                     candidate, kind, now, retry_at,
-                    self._cooldowns[ErrKind.OTHER], model),
+                    self._cooldowns[ErrKind.OTHER](), model),
                 cooling_kind=kind.value,
                 err_count=0)
         return ErrorOutcome(err_count=count)

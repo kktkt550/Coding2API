@@ -9,6 +9,7 @@ import { useSessionContext } from "../Layout";
 import type { RuntimeSetting, TaskRunResult, TaskStatus } from "../api/types";
 import { PageHeader } from "../components/PageHeader";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { TunnelPanel } from "../components/TunnelPanel";
 import { Badge, Button, Card, EmptyState, Field, Input, Notice, Panel, QueryErrorState, Select, Tabs } from "../ui";
 
 /** 网关卡在 tabs 里的值：加前缀避免与任务 key 撞车（如任务与分组同名）。 */
@@ -16,6 +17,9 @@ const groupTabValue = (key: string) => `gateway-${key}`;
 
 /** 兜底 tab：归属对不上（task 指向未装配任务、后端留空 group）的项都进这里。 */
 const OTHER_TAB = "settings-other";
+
+/** 任务分组里的 Cloudflare Tunnel 分组 key：无任务行，选中时渲染 TunnelPanel。 */
+const TUNNEL_GROUP = "tunnel";
 
 /** tab 文案：去掉任务名里的括号补充（如「模型目录刷新（OpenRouter）」），
  * 十几个 tab 排一行时它会把行撑爆、挤得每个标签折行；完整名仍在卡片标题与告警里。 */
@@ -307,6 +311,13 @@ export function SettingsPage() {
   const taskGroupOptions = taskGroups.filter((group) =>
     tasks.some((task) => task.group === group.value),
   );
+  // Cloudflare Tunnel 不是后台任务，但管理形态与任务分组一致（配置 + 运行态），
+  // 收进同一排分组 tab：选中该分组时渲染 TunnelPanel（见下方 activeTaskGroup 分支）。
+  // 只在任务侧本来就有分组时追加：任务运行态不可用的降级页保持原行为
+  // （不渲染一级 tab、直接落网关配置），Tunnel 不在该场景里凭空出现。
+  if (taskGroupOptions.length > 0) {
+    taskGroupOptions.push({ value: TUNNEL_GROUP, label: "Cloudflare Tunnel" });
+  }
   const gatewayGroupOptions = groups
     // 只列出「确实有配置项」的组，避免点开是空页
     .filter((group) => settings.some((s) => assignTab(s) === groupTabValue(group.value)))
@@ -540,6 +551,11 @@ export function SettingsPage() {
                       />
                     </div>
 
+                    {/* Cloudflare Tunnel 分组：无任务卡片，整个分组就是 Tunnel 面板 */}
+                    {activeTaskGroup === TUNNEL_GROUP ? (
+                      <TunnelPanel username={session.username} />
+                    ) : (
+                    <>
                     {/* 组内只有一个任务时不摆第三排 tab：一排只有一个选项只是噪音 */}
                     {taskGroupTasks.length > 1 && (
                       <div className="mb-3 overflow-x-auto pb-1">
@@ -576,6 +592,8 @@ export function SettingsPage() {
                       <p className="text-xs text-muted-foreground" data-testid="no-task-in-group">
                         该分组下没有已装配的任务。
                       </p>
+                    )}
+                    </>
                     )}
                   </>
                 ) : (

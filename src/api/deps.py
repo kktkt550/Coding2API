@@ -156,6 +156,11 @@ class Services:
     # 日志落库（`log_events`）：`/api/logs` 在内存环为空（刚重启）或要按
     # `request_id` 回溯时读它。None = 只有内存环（测试替身）。
     log_repo: Any = None
+    # 代理池（Cloudflare Relay 中转）快照：管理端点读写 + 发送层 resolve 共用。
+    # None = 测试装配未启用该功能。
+    relay: Any = None
+    # Cloudflare Tunnel 进程守护：管理端点读状态/触发动作。None = 未装配。
+    tunnel: Any = None
 
 
 def get_services(request: Request) -> Services:
@@ -331,6 +336,40 @@ async def api_key_user_gemini(request: Request) -> ApiKeyPrincipal:
     if query_key and query_key.strip():
         return _api_key_principal(get_services(request), request, query_key.strip())
     return await api_key_user(request)
+
+
+class _AnonymousPrincipal(ApiKeyPrincipal):
+    """匿名（无任何 Key 头）时的占位 Principal：全模型可见。
+
+    与 Bun-CF 版 `authenticate_optional` 同口径：**无 Key 放行、有 Key 必须验**。
+    错误的 Key 照常 401（不能降级成匿名——那会把「Key 写错」静默变成
+    「能看全量列表」，客户端永远发现不了自己的 Key 配置坏了）。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(username="")
+
+
+async def api_key_user_optional(request: Request) -> ApiKeyPrincipal:
+    """可选鉴权（`GET /v1/models` 免鉴权可看）：无 Key → 匿名全量；有 Key → 照常校验。
+
+    三条入口头（`x-api-key` / `Authorization: Bearer`）任一出现即走严格校验，
+    校验失败原样抛 401/403。只有「一个 Key 字段都没有」的请求才匿名放行，
+    返回全模型列表（白名单过滤仅对持有 Key 的请求生效）。
+    """
+    key = request.headers.get("x-api-key")
+    if key and key.strip():
+        return _api_key_principal(get_services(request), request, key.strip())
+    header = request.headers.get("authorization", "")
+    if header.strip():
+        services = get_services(request)
+        prefix = "Bearer "
+        if not header.lower().startswith(prefix.lower()):
+            raise UnauthorizedError("missing api key")
+        return _api_key_principal(services, request, header[len(prefix):].strip())
+    # 暂停中的网关对匿名请求也拦（kill switch 不因匿名而失效）
+    _ensure_not_paused(get_services(request))
+    return _AnonymousPrincipal()
 
 
 async def csrf_protected(request: Request) -> None:

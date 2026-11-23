@@ -29,6 +29,7 @@ from typing import Any
 import httpx
 
 from .base import ErrKind
+from .relay import apply_relay
 
 PROXY_SCHEMES: tuple[str, ...] = ("http", "https", "socks5", "socks5h")
 
@@ -136,14 +137,20 @@ def credential_proxy(credential_id: str | None) -> str | None:
 
 
 def build_client(*, timeout: httpx.Timeout, proxy: str | None = None,
+                 relay: str | None = None,
                  breaker: EgressBreaker | None = None) -> httpx.AsyncClient:
     """构造上游 HTTP 客户端：显式按渠道代理优先，永远忽略环境代理。
 
     `trust_env=False` 是既有约定——不吃 `HTTP_PROXY` 等环境变量，避免部署环境
     的全局代理意外劫持带 Token 的上游请求；按渠道代理只经 `proxy=` 显式生效。
 
+    **relay 与 proxy 互斥**（调用方保证 relay 命中时 proxy=None）：relay 命中的
+    请求在 send() 前把 URL 改写为 relay Worker 地址（见 `relay.apply_relay`），
+    与 Bun-CF 版 upstream_fetch 的改写口径逐字一致。
+
     客户端按代理 URL 挂到 `EgressBreaker` 上（`proxy` 为 None 即直连，不参与
-    熔断——直连没有「哪个出口坏了」这回事）。`breaker` 只在测试里显式传。
+    熔断——直连没有「哪个出口坏了」这回事；relay 属于直连到 Worker，同样不进
+    熔断，与 Bun-CF 版口径一致）。`breaker` 只在测试里显式传。
     """
     return _EgressGuardedClient(
         timeout=timeout,
@@ -152,6 +159,7 @@ def build_client(*, timeout: httpx.Timeout, proxy: str | None = None,
         limits=UPSTREAM_LIMITS,
         breaker=breaker or get_egress_breaker(),
         egress_proxy=proxy,
+        relay=relay,
     )
 
 
@@ -290,12 +298,19 @@ class _EgressGuardedClient(httpx.AsyncClient):
 
     def __init__(self, *, breaker: EgressBreaker,
                  egress_proxy: str | None = None,
+                 relay: str | None = None,
                  **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._egress_breaker = breaker
         self._egress_proxy = egress_proxy
+        self._relay = relay
 
     async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        relay = self._relay
+        if relay is not None:
+            # relay 命中：改写 URL + 路由头后直连 Worker（无代理、不进熔断）。
+            apply_relay(request, relay)
+            return await super().send(request, **kwargs)
         proxy = self._egress_proxy
         if proxy is None:
             # 直连：没有「哪个出口坏了」，不进熔断器

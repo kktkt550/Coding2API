@@ -39,6 +39,9 @@ nohup.out
 # 本地文档目录（不入库）
 docs/
 
+# 本机验证脚本（Windows 平台门禁绕行，仅本机用）
+verify_run.py
+
 # archify 生成的校验证据（本地复现即可，不入库；
 # delivery 除 .delivery.json 外还有 -pending/-lock 及目录锁）
 diagrams/*.visual-check.*

@@ -26,6 +26,7 @@ import type { ProviderGroup } from "../../lib/credentialList";
 import { rateLabel } from "../../components/ModelPicker";
 import type { ProviderModel } from "../../components/ModelPicker";
 import { ProviderIcon } from "../../components/ProviderIcon";
+import { GroupProxySelector } from "../../components/GroupProxySelector";
 import { LongTextTip } from "../../components/Tip";
 import { Checkbox, TableCell, TableRow } from "../../ui";
 import { QuotaRing } from "./cells";
@@ -307,6 +308,13 @@ export function CredentialGroupHeader({
                                 的东西（失败在 30s 轮询里会随下一轮补签自动回落）。
                                 最近时刻只给 HH:MM，日期对「今天」是冗余的。 */}
                             <span className="flex shrink-0 items-center">
+                              {/* 渠道分组出站代理（代理池绑定）：自包含组件，
+                                  可写角色才渲染；点击不会误触分组展开折叠。 */}
+                              <GroupProxySelector
+                                groupKey={group.key}
+                                groupLabel={group.label}
+                                canWrite={canWrite}
+                              />
                               {showCheckin && (
                                 <span
                                   className="flex w-40 shrink-0 items-center gap-2 pr-3"

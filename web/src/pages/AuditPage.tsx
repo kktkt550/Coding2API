@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { ScrollText } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ScrollText, Trash2 } from "lucide-react";
+import { api } from "../api/client";
 import { formatTime } from "../api/display";
 import { useAudit } from "../api/hooks";
 import { useSessionContext } from "../Layout";
@@ -51,6 +52,45 @@ export function AuditPage() {
   const labels = data?.labels ?? {};
   const actions = data?.actions ?? [];
   const total = data?.total ?? 0;
+
+  // 「清空记录」的两段式确认：第一次点进入确认态（3 秒无操作自动回落），
+  // 再点才真删。审计是不可恢复的追责证据，入口必须是显式的两次意图表达。
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!confirmClear) return;
+    const timer = setTimeout(() => setConfirmClear(false), 3000);
+    return () => clearTimeout(timer);
+  }, [confirmClear]);
+
+  const onClear = async () => {
+    if (clearing) return;
+    if (!confirmClear) {
+      setConfirmClear(true);
+      return;
+    }
+    setClearing(true);
+    setClearError(null);
+    try {
+      // 真清理：后端 DELETE /api/audit（表里只留一条 audit.clear 留痕）。
+      await api.clearAudit();
+      setConfirmClear(false);
+      setActorDraft("");
+      reset(() => {
+        setActor("");
+        setAction("");
+      });
+      // 写操作不改变 react-query 的 queryKey，必须显式重取：否则列表停在
+      // 清空前的旧快照上，「清空了怎么还在」正是漏了这一步的观感。
+      await refetch();
+    } catch (caught) {
+      setClearError(errorText(caught, "清空审计记录失败，请稍后重试。"));
+      setConfirmClear(false);
+    } finally {
+      setClearing(false);
+    }
+  };
 
   /** 换筛选 / 排序 = 换数据集：回到第一页，避免停在越界页码上（空白）。 */
   const reset = (next: () => void) => {
@@ -116,10 +156,11 @@ export function AuditPage() {
           <Button type="submit" variant="default">
             应用筛选
           </Button>
+          {/* 「重置」= 清筛选条件（不删数据）；真删数据在记录面板的「清空记录」。 */}
           <Button
             type="button"
             variant="ghost"
-            data-testid="audit-clear"
+            data-testid="audit-reset"
             onClick={() => {
               setActorDraft("");
               reset(() => {
@@ -128,10 +169,27 @@ export function AuditPage() {
               });
             }}
           >
-            清空
+            重置
+          </Button>
+          <Button
+            type="button"
+            variant={confirmClear ? "danger" : "ghost"}
+            data-testid="audit-clear"
+            disabled={clearing}
+            title="真清空：删除全部审计记录（表里仅留一条清空操作留痕），不可恢复"
+            onClick={() => void onClear()}
+          >
+            <Trash2 className="mr-1 size-3.5" />
+            {clearing ? "清空中…" : confirmClear ? "确认清空？" : "清空记录"}
           </Button>
         </form>
       </Panel>
+
+      {clearError && (
+        <div role="alert" data-testid="audit-clear-error">
+          <Notice tone="danger">{clearError}</Notice>
+        </div>
+      )}
 
       <Panel title={`记录${data ? `（本页 ${events.length} 条）` : ""}`} aria-label="审计记录">
         {isLoading ? (

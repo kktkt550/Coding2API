@@ -413,10 +413,12 @@ export function Row({
                         <HeartPulse className="size-4" /> 恢复
                       </DropdownMenuItem>
                     )}
-                    {credential.disabled === 1 && (
+                    {/* 冷却中也放行强制恢复：人工清冷却后可立即验证上游是否已恢复
+                        （额度没恢复时会马上再进冷却，但入口不该被藏住）。 */}
+                    {(credential.disabled === 1 || cooldown > 0) && (
                       <DropdownMenuItem
                         onSelect={() => actions.forceRevive(credential)}
-                        title="连上游点名的冷却（限流/余额/权益/风控）一起清除；清除后可能立刻再撞一次上游"
+                        title="清除冷却/禁用状态（含上游点名的限流/余额/权益/风控冷却）；若上游额度尚未恢复，可能立刻再进冷却"
                       >
                         <HeartPulse className="size-4" /> 强制恢复
                       </DropdownMenuItem>

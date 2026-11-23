@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from ..audit.actions import (
+    ACTION_CREDENTIAL_BATCH_EXPORT,
     ACTION_CREDENTIAL_DELETE,
     ACTION_CREDENTIAL_EXPORT,
     ACTION_CREDENTIAL_IMPORT,
@@ -33,8 +34,9 @@ from ..audit.actions import (
     ACTION_CREDENTIAL_WEB_COOKIE,
     ACTION_CREDENTIAL_WEIGHT,
 )
-from ..auth.rbac import require_operator
+from ..auth.rbac import require_admin, require_operator
 from ..compat.openai.request import InvalidRequest
+from ..db.crypto import CredentialDecryptError
 from ..engine.limits import day_start
 from ..provider.base import CheckinResult, GrowthResult, GrowthStep, StepStatus
 from ..provider.login_identity import (
@@ -919,6 +921,32 @@ def create_router(services: Services) -> APIRouter:
                 f'attachment; filename="coding2api-credential-{credential_id}.json"',
             "Cache-Control": "no-store",
         })
+
+    @router.get("/api/credentials/batch-export")
+    async def batch_export_credentials(principal=Depends(principal_from_request)):
+        """全池凭证批量导出：与「批量导入」的条目同形，可原样再导入。
+
+        逐条走 `export_entry`（单条导出同一口径：不带网页 Cookie / 账号密码），
+        解密失败的条目只进 `failed`、不连累整批——换过 APP_SECRET 后部分旧凭证
+        解不开是常态，批量导出必须把能带走的都带走。响应 `no-store` 防中间层
+        缓存明文；审计只记条数，不落任何凭证内容。
+        """
+        require_admin(principal)
+        items: list[dict] = []
+        failed: list[dict] = []
+        for credential_id in credentials.all_ids():
+            try:
+                items.append(credentials.export_entry(credential_id))
+            except CredentialDecryptError as error:
+                failed.append({"id": credential_id, "reason": str(error)})
+        services.audit.record(
+            actor=principal.username, action=ACTION_CREDENTIAL_BATCH_EXPORT,
+            detail=f"成功 {len(items)} 条；失败 {len(failed)} 条")
+        logger.info("管理员 %s 批量导出凭证：成功 %d，失败 %d",
+                    principal.username, len(items), len(failed))
+        return JSONResponse({"items": items, "failed": failed,
+                             "count": len(items)},
+                            headers={"Cache-Control": "no-store"})
 
     @router.get("/api/credentials/{credential_id}/growth")
     async def growth_history(credential_id: str, limit: int = 20,

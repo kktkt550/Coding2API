@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileTerminal, Pause, Play, Trash2 } from "lucide-react";
-import { ApiError } from "../api/client";
+import { ApiError, api } from "../api/client";
 import {
   LOG_LEVELS,
   fetchLogs,
@@ -86,6 +86,36 @@ export function LogsPage() {
   // 故另存一份 ref，截断始终按最新容量。
   const capacityRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  // 清空的两段式确认：第一次点只进入确认态（3 秒无操作自动回落），再点才真清。
+  // 「清空」不可恢复，避免误触；确认态下按钮变红，明确表达后果。
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  useEffect(() => {
+    if (!confirmClear) return;
+    const timer = setTimeout(() => setConfirmClear(false), 3000);
+    return () => clearTimeout(timer);
+  }, [confirmClear]);
+
+  const onClear = async () => {
+    if (clearing) return;
+    if (!confirmClear) {
+      setConfirmClear(true);
+      return;
+    }
+    setClearing(true);
+    setError(null);
+    try {
+      // 真清理：后端清内存环 + 落库表（DELETE /api/logs），本页只保留清空后的新行。
+      await api.clearLogs();
+      setLines([]);
+      setConfirmClear(false);
+    } catch (caught) {
+      setError(errorText(caught, "清空日志失败，请稍后重试。"));
+      setConfirmClear(false);
+    } finally {
+      setClearing(false);
+    }
+  };
 
   // 合并新行：按 seq 去重（快照与实时推送会交叠），并保持 seq 升序；
   // 行数按当前缓冲容量截断，只保留最近的若干行（长连 SSE 不能无限增长）。
@@ -214,12 +244,14 @@ export function LogsPage() {
               </Button>
               <Button
                 size="sm"
-                variant="ghost"
+                variant={confirmClear ? "danger" : "ghost"}
                 data-testid="logs-clear"
-                onClick={() => setLines([])}
+                disabled={clearing}
+                title="真清空：删除内存环与落库的全部日志，不可恢复"
+                onClick={() => void onClear()}
               >
                 <Trash2 className="mr-1 size-3.5" />
-                清空
+                {clearing ? "清空中…" : confirmClear ? "确认清空？" : "清空"}
               </Button>
             </div>
           }

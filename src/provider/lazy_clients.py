@@ -23,6 +23,7 @@ import httpx
 
 from ..request_context import get_credential_id
 from .proxy import SHORT_TIMEOUT, STREAM_TIMEOUT, build_client, credential_proxy
+from .relay import relay_for_credential
 
 
 class LazyClients:
@@ -40,20 +41,28 @@ class LazyClients:
     _proxy: str | None
 
     def _effective_proxy(self) -> str | None:
-        """当前请求的出口：凭证池分配优先，其次渠道级 `PROVIDER_PROXIES`。"""
+        """当前请求的出口：relay 绑定优先（与代理互斥），其次凭证池分配、
+        渠道级 `PROVIDER_PROXIES`。"""
+        if relay_for_credential(get_credential_id()):
+            return None  # relay 命中：URL 在 send() 前改写，不经代理
         return credential_proxy(get_credential_id()) or self._proxy
 
+    def _effective_relay(self) -> str | None:
+        """当前请求的 relay 出口（未命中为 None，回退代理/直连）。"""
+        return relay_for_credential(get_credential_id())
+
     def _pooled(self, timeout: httpx.Timeout, kind: str) -> httpx.AsyncClient:
-        proxy = self._effective_proxy()
-        pools: dict[tuple[str, str | None], httpx.AsyncClient] | None = getattr(
+        relay = self._effective_relay()
+        proxy = None if relay is not None else self._effective_proxy()
+        pools: dict[tuple[str, str | None, str | None], httpx.AsyncClient] | None = getattr(
             self, "_pools", None)
         if pools is None:
             pools = {}
             self._pools = pools
-        key = (kind, proxy)
+        key = (kind, proxy, relay)
         client = pools.get(key)
         if client is None:
-            client = build_client(timeout=timeout, proxy=proxy)
+            client = build_client(timeout=timeout, proxy=proxy, relay=relay)
             pools[key] = client
         return client
 

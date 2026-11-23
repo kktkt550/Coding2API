@@ -130,14 +130,20 @@ describe("LogsPage", () => {
     expect(screen.getByTestId("logs-status")).toHaveTextContent("实时");
   });
 
-  it("清空后显示空态，新行照常追加", async () => {
+  it("清空：两段确认后 DELETE /api/logs，显示空态，新行照常追加", async () => {
     mockFetch({ "/api/logs": SNAPSHOT });
     renderPage(<LogsPage />, { username: "root", is_admin: true });
     await settle();
 
+    // 第一次点只进入确认态，不发请求
+    await userEvent.click(screen.getByTestId("logs-clear"));
+    expect(screen.getByTestId("logs-clear")).toHaveTextContent("确认清空？");
+
+    // 再点才真清：本页显示空态
     await userEvent.click(screen.getByTestId("logs-clear"));
     expect(screen.getByTestId("logs-empty")).toHaveTextContent("还没有日志");
 
+    // 新行照常追加
     MockEventSource.last().emit(line({ seq: 9, message: "清空后的新行" }));
     await waitFor(() => {
       expect(screen.getByTestId("logs-list")).toHaveTextContent("清空后的新行");

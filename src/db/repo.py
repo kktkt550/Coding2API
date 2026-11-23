@@ -882,6 +882,21 @@ class CredentialRepository:
             "SELECT provider FROM credentials WHERE id = ?", (credential_id,)).fetchone()
         return row["provider"] if row else None
 
+    def all_provider_pairs(self) -> list[dict[str, str]]:
+        """全量 `[{id, provider}]`（轻量、不解密）：代理池构建「凭证→渠道」映射用。
+
+        凭证归属渠道在创建后不变，故不需要任何状态列——一次全表扫 id+provider
+        两列，配合代理池写后 refresh 即可。
+        """
+        rows = self._db.connect().execute(
+            "SELECT id, provider FROM credentials").fetchall()
+        return [{"id": row["id"], "provider": row["provider"]} for row in rows]
+
+    def all_ids(self) -> list[str]:
+        """全量凭证 id（轻量）：批量导出等低频运维操作遍历用。"""
+        rows = self._db.connect().execute("SELECT id FROM credentials").fetchall()
+        return [row["id"] for row in rows]
+
     def has_same_credential(self, provider: str, credential_data: dict[str, Any]) -> bool:
         """同渠道是否已有内容完全相同的凭证（批量导入去重用）。
 
@@ -1119,8 +1134,13 @@ class ApiKeyRepository:
     def create(self, username: str, name: str = "", now: int | None = None,
                *, provider_binding: str = "", allowed_ips: str = "",
                allowed_models: str = "", expires_at: int | None = None,
-               quota: str = "") -> dict[str, Any]:
-        plaintext = generate_api_key()
+               quota: str = "", key: str | None = None) -> dict[str, Any]:
+        """创建一把 Key；`key` 非空时用它作为明文（自定义 Key，API 层已校验）。
+
+        自定义 Key 撞库（key_digest UNIQUE）时 sqlite 抛 IntegrityError——API 层
+        已做唯一性预检把它变成可读的 400，这里不再翻译（构造上到不了这里）。
+        """
+        plaintext = key if key else generate_api_key()
         key_id = _new_id("key")
         created_at = _now(now)
         with self._db.transaction() as conn:
@@ -1136,6 +1156,16 @@ class ApiKeyRepository:
                 "provider_binding": provider_binding, "allowed_ips": allowed_ips,
                 "allowed_models": allowed_models, "expires_at": expires_at,
                 "quota": quota}
+
+    def digest_exists(self, digest: str) -> bool:
+        """某 Key 摘要是否已被占用（自定义 Key 的唯一性预检）。
+
+        刻意不复用 `authenticate`：那个方法命中时会写 last_used_at（分钟级节流
+        也挡不住首次写），预检只读不写，不产生任何副作用。
+        """
+        row = self._db.connect().execute(
+            "SELECT 1 FROM api_keys WHERE key_digest = ?", (digest,)).fetchone()
+        return row is not None
 
     def set_quota(self, key_id: str, username: str, quota: str) -> bool:
         """整体替换一把 Key 的配额配置（空串 = 清除配额）。
@@ -1905,6 +1935,16 @@ class AuditRepository:
                  target, detail, ip, 1 if ok else 0),
             )
         return event_id
+
+    def clear(self) -> int:
+        """清空全部审计流水（管理端点用）；返回清除的行数。
+
+        调用方在清空后**必须**写一条 `audit.clear` 记录：清空是高敏操作，
+        表里至少要留下「谁在什么时候清的」这一行，否则事后无从追责。
+        """
+        with self._db.transaction() as conn:
+            cursor = conn.execute("DELETE FROM audit_events")
+        return cursor.rowcount
 
     def query(self, *, actor: str | None = None, action: str | None = None,
               since: int | None = None, before: int | None = None,

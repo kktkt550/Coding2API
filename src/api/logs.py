@@ -28,11 +28,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from ..audit.actions import ACTION_LOGS_CLEAR
 from ..auth.rbac import require_admin
 from ..compat.openai.errors import error_payload
 from ..stats.live import Subscription, TooManySubscribers
 from ..webapp.log_buffer import LogBuffer, sync_root_handler
-from .deps import Services, principal_from_request
+from .deps import Services, csrf_protected, principal_from_request, request_ip
 
 # 心跳间隔：与统计实时流同一口径（代理通常在 60s 断静默连接）。
 HEARTBEAT_SECONDS = 15.0
@@ -156,5 +157,24 @@ def create_router(services: Services) -> APIRouter:
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no",
                      "Connection": "keep-alive"},
         )
+
+    @router.delete("/api/logs")
+    async def clear_logs(request: Request,
+                         _csrf: None = Depends(csrf_protected),
+                         principal=Depends(principal_from_request)):
+        """清空日志（admin + CSRF）：内存环与落库表一起清，真删除、不可恢复。
+
+        清空动作本身落一条 `logs.clear` 审计（审计表独立于日志，不受影响）。
+        清空后页面不再回放旧行，SSE 订阅者按 `seq` 继续收新行。
+        """
+        require_admin(principal)
+        memory_cleared = buffer.clear()
+        repo = services.log_repo
+        db_cleared = repo.clear() if repo is not None else 0
+        services.audit.record(
+            actor=principal.username, action=ACTION_LOGS_CLEAR,
+            detail=f"内存 {memory_cleared} 行；落库 {db_cleared} 行",
+            ip=request_ip(request, services.settings))
+        return {"ok": True, "memory": memory_cleared, "persisted": db_cleared}
 
     return router

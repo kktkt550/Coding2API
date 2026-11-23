@@ -193,6 +193,18 @@ class LogBuffer:
             lines = lines[-limit:] if limit > 0 else []
         return [line.as_dict() for line in lines]
 
+    def clear(self) -> int:
+        """清空内存环（管理端点「清空日志」用）；返回清除的行数。
+
+        `seq` 计数**不清零**：SSE 订阅者按 `seq` 去重（回放 vs 实时交叠），
+        清零会让在途订阅把旧行误判成新行。落库表由 `LogRepository.clear`
+        单独清（两份数据两种保留期，与读取路径的分工一致）。
+        """
+        with self._lock:
+            cleared = len(self._lines)
+            self._lines.clear()
+        return cleared
+
     # ---------------------------------------------------------------- 推送
 
     def _publish(self, payload: dict[str, Any]) -> None:
