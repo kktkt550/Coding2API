@@ -54,6 +54,7 @@ const IMPORT_TEMPLATES: Partial<Record<Provider, string>> = {
     '{\n  "model_app_key": "",\n  "model_app_secret": "",\n  "model_base_url": "https://modelgw-xxxx.officeace.cn-southwest-2.huaweicloud-agentarts.com"\n}',
   raccoon: '{\n  "access_token": ""\n}',
   lingxi: '{\n  "cookie": "wps_sid=…; uid=…"\n}',
+  magicrew: '{\n  "jwt": "",\n  "organization_code": ""\n}',
 };
 
 type TabValue = "login" | "import";

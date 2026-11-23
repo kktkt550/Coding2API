@@ -89,9 +89,9 @@ _META_ALIASES = {"context_length": "max_input_tokens",
 # 多渠道模型取所有渠道里的最小权重（含 CB 即进第一段）。
 _PROVIDER_RANK = {"codebuddy": 0, "codebuddy_intl": 1, "trae": 2, "qoder": 3,
                   "codearts": 4, "officeace": 5, "raccoon": 6,
-                  "lingxi": 7}
+                  "lingxi": 7, "magicrew": 8}
 # 通用上游排最后：它是用户自定义端点，模型身份最不确定，展示优先级最低。
-_UNRANKED_PROVIDER = 8
+_UNRANKED_PROVIDER = 9
 
 # 哨兵名：各上游自己的「自动路由 / 默认模型」占位，语义只在本渠道内成立，不跨
 # 渠道合并。kilo 的 `kilo-auto/free`（上游名 `Auto Free`）与 Qoder 的 `auto`

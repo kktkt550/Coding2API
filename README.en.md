@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/github/license/RobbsLuo/Coding2API)](LICENSE)
 [![Image](https://img.shields.io/badge/image-ghcr.io%2Frobbsluo%2Fcoding2api-blue)](https://github.com/RobbsLuo/Coding2API/pkgs/container/coding2api)
 
-Ten upstream channels — **CodeBuddy** (China + international, two separate channels), **TRAE SOLO**, **OpenCode Zen**, **Kilo**, **Qoder**, **CodeArts**, **OfficeAce**, **Raccoon**, **Lingxi** — plus an optional **generic OpenAI-compatible upstream**, exposed as an OpenAI-compatible API: shared credential pool, unified model names and scheduling, per-user usage accounting.
+Eleven upstream channels — **CodeBuddy** (China + international, two separate channels), **TRAE SOLO**, **OpenCode Zen**, **Kilo**, **Qoder**, **CodeArts**, **OfficeAce**, **Raccoon**, **Lingxi**, **Magicrew** — plus an optional **generic OpenAI-compatible upstream**, exposed as an OpenAI-compatible API: shared credential pool, unified model names and scheduling, per-user usage accounting.
 
 > [!WARNING]
 > Reverse-engineered endpoints, for study and research only, no security audit. Public deployment needs a reverse proxy + auth + IP allowlist.
@@ -117,7 +117,7 @@ echo "$PASSWORD" | python3 scripts/create_user.py alice --role admin --password-
    - **TRAE**: paste credential JSON (`accessToken`/`uid`/`refreshToken`) or the callback link (`apiHost` must be an official host).
    - **Qoder / CodeArts**: device code / OAuth2 authorization-code login (for CodeArts, paste the unreachable local callback link back into the page).
    - **OfficeAce**: click *Sign in to OfficeAce*, Huawei Cloud authorization (callback handled in the cloud).
-   - **Raccoon / Lingxi**: no login button; paste a web session credential (`{"access_token":"<xhx_token>"}` for Raccoon, a full cookie or bare `wps_sid` for Lingxi).
+   - **Raccoon / Lingxi / Magicrew**: no login button; paste a web session credential (`{"access_token":"<xhx_token>"}` for Raccoon, a full cookie or bare `wps_sid` for Lingxi, `{"jwt":"<web JWT>","organization_code":""}` for Magicrew).
    - **Generic paste**: the *JSON import* box accepts a full cookie header or DevTools → Network → right-click request → **Copy as cURL (bash)** (works with HttpOnly cookies). Distinctive markers (`wps_sid` / `xhx_token` / TRAE fields / AK·SK) auto-detect the channel, and the choice is remembered.
    - **OpenCode Zen / Kilo**: nothing to add; a virtual credential appears at startup (restore from the same panel if deleted).
 2. Create an `sk-...` key on *API keys* (plaintext shown once).
@@ -158,7 +158,7 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 
 ## Channels
 
-> CodeBuddy (incl. international) / TRAE / Qoder / CodeArts / OfficeAce / Raccoon / Lingxi need credentials; **Zen and Kilo are credential-free free tiers** — a single virtual row in the pool (scheduling / cooldown / stats as usual), quota column "free tier (no quota API)", health always "no probe". Deleting the row resurrects it on restart; to disable permanently use *Pause*.
+> CodeBuddy (incl. international) / TRAE / Qoder / CodeArts / OfficeAce / Raccoon / Lingxi / Magicrew need credentials; **Zen and Kilo are credential-free free tiers** — a single virtual row in the pool (scheduling / cooldown / stats as usual), quota column "free tier (no quota API)", health always "no probe". Deleting the row resurrects it on restart; to disable permanently use *Pause*.
 
 ### OpenCode Zen (`zen`)
 
@@ -230,6 +230,17 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 - **Check-in**: task center `daily_check_in`, `status=claimed` means done today. Upstream fakes 200 on repeat claims (balance unchanged) → rewards are computed from the **before/after balance delta**, and a zero delta reads the task status; never trust HTTP 200.
 - **Error classification**: 401 → credential invalid; 402 / quota wording → exhausted; 403 → transient; 404 → bad request; 429 → that model; `AuditFailed` → switching credentials is useless; expired run → rebuild once.
 - **ToS grey area**: reuses the desktop/web session and impersonates the desktop client (`X-Client-Type: lingxi_claw` + fixed `x-kso-app-name/app-version/device-id`), see `provider/tos.py`.
+
+### Magicrew (`magicrew`)
+
+[Magicrew](https://www.letsmagic.cn), China site. **No login button**: the phone-password login protocol is unverified (the reference implementation calls it dead exploratory code), so only manual web-session import is supported — copy the JWT from DevTools after signing in and paste `{"jwt": "<value>", "organization_code": "<org>"}` (the org code is optional on the China site).
+
+- **Three credential layers**: web JWT (30 days, business APIs), `mgw_` gateway key (2 hours, inference), refresh token (7 days, **one-shot rotation**). Import needs only the JWT; the gateway key is issued on demand when missing or expired — **issuing a new key revokes the old one**, so it happens only on missing / expired / upstream `token无效`, cached in-process per JWT. `RefreshTask` rotates it via `PUT /api/v1/model-gateway/tokens` and persists.
+- **Headers**: business APIs require `origin` / `referer` (the WAF keys on referer; missing it is a 403 with an empty body); `organization-code` only when non-empty; the UA is part of an upstream blocklist (`curl`, `Chrome/141.0.0.0` → 405), configurable.
+- **Inference**: standard OpenAI SSE, **stream only**, always with `stream_options.include_usage` (upstream omits usage frames otherwise). **The verdict is the business code, not the status**: a mismatched key returns `HTTP 200 + {"code":403,"message":"token无效"}` with a JSON content type — the content type is checked before entering the stream, and a token-invalid envelope triggers one re-issue and one retry.
+- **Quota = points**: `GET /api/v1/quota/points/total`, `total_points` is the balance, `expiring_quota_details` feeds the expiry ladder (UTC+8, no offset); ledger is `credits`.
+- **Check-in**: `POST /api/v1/login-gift` (request body is a **non-empty empty string**); `data.granted` must be a boolean — `false` means already claimed today (idempotent, still HTTP 200), a missing field is a failure.
+- **ToS red line (the only `red` channel)**: terms 3.2 forbid calling non-public APIs from scripts and wrapping/proxying/relaying the service; 3.3 explicitly forbids account pools. The multi-credential sharing here hits all of them — the reason is surfaced on import and in the audit trail; single-account self-use only.
 
 ### Generic upstream (`generic`, optional)
 
@@ -401,7 +412,7 @@ No `credential_id` / `api_key_id` / `username` (high cardinality). `requests_tot
 
 ## Model list
 
-`GET /v1/models` and the Playground dropdown merge only **channels with a usable credential** (cooling ones still count). Order: CodeBuddy (China → international), TRAE, Qoder, CodeArts, OfficeAce, Raccoon, Lingxi, with Zen / Kilo last; alphabetical within a group; a model on multiple channels belongs to the highest-priority one (`_PROVIDER_RANK` in `src/api/model_merge.py`).
+`GET /v1/models` and the Playground dropdown merge only **channels with a usable credential** (cooling ones still count). Order: CodeBuddy (China → international), TRAE, Qoder, CodeArts, OfficeAce, Raccoon, Lingxi, Magicrew, with Zen / Kilo / generic last; alphabetical within a group; a model on multiple channels belongs to the highest-priority one (`_PROVIDER_RANK` in `src/api/model_merge.py`).
 
 - **Routing only trusts this cache**: if the catalog proves ownership, only those channels are candidates, and none usable → 503; a model absent from the catalog routes across all candidates; explicit `@channel` and key channel binding are unaffected.
 - **Snapshot and startup**: besides the single service-layer in-process TTL cache (TTL = `MODEL_LIST_TTL_SECONDS`), every successful fetch writes `DATA_DIR/model_catalog.json`, read synchronously at startup; a corrupt snapshot or one older than 7 days just drops the cache. The `MODEL_CATALOG_MINUTES` task keeps it fresh.

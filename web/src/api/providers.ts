@@ -18,6 +18,7 @@ export const PROVIDER_LABEL: Record<Provider, string> = {
   officeace: "OfficeAce",
   raccoon: "小浣熊",
   lingxi: "灵犀",
+  magicrew: "超级麦吉",
 };
 
 /** 模型下拉里的渠道缩写（如 `CB x0.29`）。 */
@@ -32,6 +33,7 @@ export const PROVIDER_ABBR: Record<Provider, string> = {
   officeace: "OA",
   raccoon: "RC",
   lingxi: "LX",
+  magicrew: "MW",
 };
 
 /**
@@ -51,6 +53,7 @@ export const PROVIDER_CHART_COLOR: Record<Provider, string> = {
   officeace: "var(--chart-8)",
   raccoon: "var(--chart-9)",
   lingxi: "var(--chart-10)",
+  magicrew: "var(--chart-11)",
 };
 
 /** 未知渠道（老数据/未来渠道）的兜底色。 */
@@ -75,6 +78,7 @@ export const PROVIDER_ORDER: Provider[] = [
   "officeace",
   "raccoon",
   "lingxi",
+  "magicrew",
 ];
 
 /**

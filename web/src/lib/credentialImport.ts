@@ -28,6 +28,7 @@ export const IMPORT_PROVIDERS: Provider[] = [
   "officeace",
   "raccoon",
   "lingxi",
+  "magicrew",
 ];
 
 export type ParsedCredential =
@@ -87,6 +88,10 @@ function providerFromObject(value: Record<string, unknown>): Provider | null {
   if (has("access_key_id") || has("secret_access_key")) return "codearts";
   if (has("model_app_key") || has("model_app_secret") || has("model_base_url")) {
     return "officeace";
+  }
+  // 超级麦吉：`jwt` 单独出现不够（TRAE 等也发 JWT），必须带组织码/网关 key 之一
+  if (has("jwt") && (has("organization_code") || has("organizationCode") || has("api_key"))) {
+    return "magicrew";
   }
   const provider = value.provider;
   if (typeof provider === "string" && IMPORT_PROVIDERS.includes(provider as Provider)) {

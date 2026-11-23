@@ -171,6 +171,21 @@ class Settings(BaseSettings):
     lingxi_allowed_endpoints: str = (
         "https://lingxi.wps.cn,https://lingxi.kdocs.cn"
     )
+    # Magicrew（超级麦吉）：国内站模型网关，鉴权是网页会话 JWT（30 天）+ 短期
+    # 网关 key（`mgw_`，2 小时）。白名单只为防误配——JWT 等同于账号登录态，
+    # 发往未授权主机就是整号泄露。国际站（`magic-service.magicrew.ai`）另有
+    # 整串精确匹配的脚本 UA 黑名单，本仓默认只接国内站。
+    magicrew_api_endpoint: str = "https://i-magic-service.letsmagic.cn"
+    magicrew_allowed_endpoints: str = "https://i-magic-service.letsmagic.cn"
+    # 业务接口的 Origin / Referer 必须指向网页端：WAF 按 referer 判来源，
+    # 缺了直接 403 空 body（签发 key、昵称两个端点实测如此）。
+    magicrew_web_origin: str = "https://www.letsmagic.cn"
+    # 上游按**整串精确匹配**拦脚本 UA（`curl/…`、`Chrome/141.0.0.0` 回 405），
+    # 故 UA 做成配置项，改完重启即可跟随上游名单变化。
+    magicrew_user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/141.0.7390.55 Safari/537.36"
+    )
     # Qoder（阿里，COSY 私有协议）：真实账号渠道，端点白名单防止误把带 COSY
     # 签名的请求发往未授权主机。默认取国内版；国际版改这两个值并把国际版域名
     # 一并加入白名单。推理走 gateway.*，额度/登录走 openapi.*。
@@ -385,6 +400,9 @@ class Settings(BaseSettings):
     # WPS 灵犀聊天最小间隔：真实账号渠道，上游按 run 计费且并发未取证，默认 0；
     # 需要给同一账号限速时调大（run 缓存与单飞已把重复计费压在客户端）。
     lingxi_chat_min_interval: float = 0
+    # Magicrew 聊天最小间隔：真实账号渠道（积分计费），并发未取证，默认 0；
+    # 需要给同一账号限速时调大。与其余渠道各自独立，不共享 pacer。
+    magicrew_chat_min_interval: float = 0
     # 小浣熊每账号并发上限：实测 5 并发放行、第 6 个 429。取 2 留余量，避免
     # 与用户其它客户端抢同一账号的并发额度。0 关闭上限。
     raccoon_max_concurrency: int = 2
@@ -678,6 +696,11 @@ class Settings(BaseSettings):
                      for e in self.raccoon_allowed_endpoints.split(",") if e.strip())
 
     @cached_property
+    def magicrew_allowed(self) -> tuple[str, ...]:
+        return tuple(e.strip().rstrip("/")
+                     for e in self.magicrew_allowed_endpoints.split(",") if e.strip())
+
+    @cached_property
     def lingxi_allowed(self) -> tuple[str, ...]:
         return tuple(e.strip().rstrip("/")
                      for e in self.lingxi_allowed_endpoints.split(",") if e.strip())
@@ -806,6 +829,11 @@ def validate_raccoon_endpoint_allowed(endpoint: str, settings: Settings) -> bool
 def validate_lingxi_endpoint_allowed(endpoint: str, settings: Settings) -> bool:
     """灵犀端点白名单校验（防把 WPS 登录态 cookie 发往未授权主机）。"""
     return endpoint.strip().rstrip("/") in settings.lingxi_allowed
+
+
+def validate_magicrew_endpoint_allowed(endpoint: str, settings: Settings) -> bool:
+    """Magicrew 端点白名单校验（JWT 等同账号登录态，发错主机即整号泄露）。"""
+    return endpoint.strip().rstrip("/") in settings.magicrew_allowed
 
 
 def validate_qoder_endpoint_allowed(endpoint: str, settings: Settings) -> bool:

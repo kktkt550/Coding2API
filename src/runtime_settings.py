@@ -225,6 +225,10 @@ HOT_SETTINGS: tuple[HotSetting, ...] = (
                "灵犀真实账号渠道专用节流（0 关闭，默认）。上游按 run 计费，"
                "run 缓存与单飞已避免重复计费；与其余渠道各自独立，不共享。",
                minimum=0.0, group="chat_throttle"),
+    HotSetting("magicrew_chat_min_interval", float, "Magicrew 聊天最小间隔（秒）",
+               "Magicrew 真实账号渠道专用节流（0 关闭，默认）。按积分计费、"
+               "并发未取证；与其余渠道各自独立，不共享。",
+               minimum=0.0, group="chat_throttle"),
     HotSetting("raccoon_max_concurrency", int, "小浣熊每账号并发上限",
                "上游按请求频率限流（实测 5 并发放行、第 6 个 429 "
                "user_model_rate_limited）。默认 2 留余量；0 关闭上限。",
@@ -944,6 +948,10 @@ class RuntimeSettings:
     @property
     def lingxi_chat_min_interval(self) -> float:
         return float(self.get("lingxi_chat_min_interval"))
+
+    @property
+    def magicrew_chat_min_interval(self) -> float:
+        return float(self.get("magicrew_chat_min_interval"))
 
     @property
     def raccoon_max_concurrency(self) -> int:

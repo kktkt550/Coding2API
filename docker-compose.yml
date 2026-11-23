@@ -174,6 +174,12 @@ services:
       # 白名单必须同时含主域与 kdocs 回落域（对话面按这两个域顺序回落）。
       LINGXI_API_ENDPOINT: ${LINGXI_API_ENDPOINT:-https://lingxi.wps.cn}
       LINGXI_ALLOWED_ENDPOINTS: ${LINGXI_ALLOWED_ENDPOINTS:-https://lingxi.wps.cn,https://lingxi.kdocs.cn}
+      # 超级麦吉（Magicrew）：国内站模型网关，JWT 等同账号登录态。
+      MAGICREW_API_ENDPOINT: ${MAGICREW_API_ENDPOINT:-https://i-magic-service.letsmagic.cn}
+      MAGICREW_ALLOWED_ENDPOINTS: ${MAGICREW_ALLOWED_ENDPOINTS:-https://i-magic-service.letsmagic.cn}
+      # 业务接口的 Origin / Referer 基准；UA 是上游黑名单的一部分（整串匹配）
+      MAGICREW_WEB_ORIGIN: ${MAGICREW_WEB_ORIGIN:-https://www.letsmagic.cn}
+      MAGICREW_USER_AGENT: ${MAGICREW_USER_AGENT:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.7390.55 Safari/537.36}
       # Qoder（阿里，COSY 私有协议）：真实账号渠道。默认国内 openapi 网关；
       # 国际版改 QODER_API_ENDPOINT=https://openapi.qoder.sh 并把国际版域名
       # 保留在白名单里。推理走 gateway.*，额度/登录走 openapi.*。白名单防把
@@ -200,6 +206,8 @@ services:
       RACCOON_AUTO_LOGIN: ${RACCOON_AUTO_LOGIN:-false}
       # 灵犀聊天最小间隔（秒）：独立节流器，0（默认）关闭
       LINGXI_CHAT_MIN_INTERVAL: ${LINGXI_CHAT_MIN_INTERVAL:-0}
+      # 超级麦吉聊天最小间隔（秒）：独立节流器，0（默认）关闭
+      MAGICREW_CHAT_MIN_INTERVAL: ${MAGICREW_CHAT_MIN_INTERVAL:-0}
       # Qoder / CodeArts 聊天最小间隔（秒）：真实账号渠道，独立节流器
       QODER_CHAT_MIN_INTERVAL: ${QODER_CHAT_MIN_INTERVAL:-5}
       CODEARTS_CHAT_MIN_INTERVAL: ${CODEARTS_CHAT_MIN_INTERVAL:-5}
