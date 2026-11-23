@@ -76,6 +76,7 @@ from .config import (
     validate_generic_endpoint_allowed,
     validate_kilo_endpoint_allowed,
     validate_lingxi_endpoint_allowed,
+    validate_magicrew_endpoint_allowed,
     validate_officeace_endpoint_allowed,
     validate_qoder_endpoint_allowed,
     validate_raccoon_endpoint_allowed,
@@ -127,6 +128,8 @@ from .provider.generic.client import GenericClient, GenericProvider, split_model
 from .provider.kilo.client import KiloClient, KiloProvider
 from .provider.lingxi import LingxiProvider
 from .provider.lingxi.client import LingxiClient
+from .provider.magicrew import MagicrewProvider
+from .provider.magicrew.client import MagicrewClient
 from .provider.officeace import OfficeAceProvider
 from .provider.officeace.client import OfficeAceClient
 from .provider.officeace.oauth import OfficeAceOAuth
@@ -287,6 +290,15 @@ def _raccoon_endpoint(config: Settings) -> str:
                              validator=validate_raccoon_endpoint_allowed,
                              env_name="RACCOON_API_ENDPOINT",
                              allowed_name="RACCOON_ALLOWED_ENDPOINTS")
+
+
+def _magicrew_endpoint(config: Settings) -> str:
+    """解析 Magicrew 端点并强制白名单校验（JWT 等同账号登录态）。"""
+    return _resolve_endpoint(config, attr="magicrew_api_endpoint",
+                             validator=validate_magicrew_endpoint_allowed,
+                             env_name="MAGICREW_API_ENDPOINT",
+                             allowed_name="MAGICREW_ALLOWED_ENDPOINTS",
+                             strip_slash=True)
 
 
 def _lingxi_endpoint(config: Settings) -> str:
@@ -512,6 +524,10 @@ def build_app(settings: Settings | None = None, *, providers: dict | None = None
     lingxi_pacer = Pacer(lambda: runtime.lingxi_chat_min_interval,
                          lambda: runtime.lingxi_chat_min_interval,
                          allow_concurrent=True)
+    # Magicrew 独立 pacer：真实账号渠道（积分计费），与其余渠道互不排队。
+    magicrew_pacer = Pacer(lambda: runtime.magicrew_chat_min_interval,
+                           lambda: runtime.magicrew_chat_min_interval,
+                           allow_concurrent=True)
     # Qoder / CodeArts 是真实账号渠道，上游按账号频控；各自独立 pacer，
     # 与其余渠道互不排队（同渠道同凭证共桶、桶内允许并发）。
     qoder_pacer = Pacer(lambda: runtime.qoder_chat_min_interval,
@@ -607,6 +623,12 @@ def build_app(settings: Settings | None = None, *, providers: dict | None = None
             client=LingxiClient(host=_lingxi_endpoint(config),
                                 proxy=proxies.get("lingxi")),
             pacer=lingxi_pacer),
+        "magicrew": MagicrewProvider(
+            client=MagicrewClient(host=_magicrew_endpoint(config),
+                                  web_origin=config.magicrew_web_origin,
+                                  user_agent=config.magicrew_user_agent,
+                                  proxy=proxies.get("magicrew")),
+            pacer=magicrew_pacer),
         "officeace": OfficeAceProvider(
             client=OfficeAceClient(cloud_base=_officeace_endpoint(config),
                                    proxy=proxies.get("officeace")),

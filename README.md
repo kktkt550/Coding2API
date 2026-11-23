@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/github/license/RobbsLuo/Coding2API)](LICENSE)
 [![Image](https://img.shields.io/badge/image-ghcr.io%2Frobbsluo%2Fcoding2api-blue)](https://github.com/RobbsLuo/Coding2API/pkgs/container/coding2api)
 
-把十路渠道——**CodeBuddy**（国内 / 国际两个独立渠道）、**TRAE SOLO**、**OpenCode Zen**、**Kilo**、**Qoder**、**CodeArts**、**OfficeAce**、**小浣熊**、**灵犀**——外加可选的**通用 OpenAI 兼容上游**，封装成 OpenAI 兼容 API：公共凭证池、统一模型名与调度、按人用量统计。
+把十一路渠道——**CodeBuddy**（国内 / 国际两个独立渠道）、**TRAE SOLO**、**OpenCode Zen**、**Kilo**、**Qoder**、**CodeArts**、**OfficeAce**、**小浣熊**、**灵犀**、**超级麦吉**——外加可选的**通用 OpenAI 兼容上游**，封装成 OpenAI 兼容 API：公共凭证池、统一模型名与调度、按人用量统计。
 
 > [!WARNING]
 > 逆向接口，仅供学习研究，未做安全审计；公网部署需反向代理 + 鉴权 + IP 白名单。
@@ -118,7 +118,7 @@ python3 scripts/create_user.py alice --role admin --init   # 库还不存在时�
    - **TRAE**：粘凭证 JSON（`accessToken`/`uid`/`refreshToken`）或回调链接（`apiHost` 只收官方地址）。
    - **Qoder / CodeArts**：设备码 / OAuth2 授权码登录（CodeArts 授权后把打不开的本地回调链接粘回页面）。
    - **OfficeAce**：点「登录 OfficeAce」走华为云授权（回调由云端承接）。
-   - **小浣熊 / 灵犀**：无登录按钮，只能粘网页会话凭据（小浣熊 `{"access_token":"<xhx_token>"}`，灵犀整段 Cookie 或裸 `wps_sid`）。
+   - **小浣熊 / 灵犀 / 超级麦吉**：无登录按钮，只能粘网页会话凭据（小浣熊 `{"access_token":"<xhx_token>"}`，灵犀整段 Cookie 或裸 `wps_sid`，超级麦吉 `{"jwt":"<网页 JWT>","organization_code":""}`）。
    - **通用粘法**：「JSON 导入」接受整段 Cookie，或 DevTools → Network → 右键请求 → **Copy as cURL (bash)**（HttpOnly cookie 也能拿到）；有明确特征（`wps_sid` / `xhx_token` / TRAE 字段 / AK·SK）时自动识别渠道并记住。
    - **OpenCode Zen / Kilo**：无需添加，启动自动出虚拟凭证（删了可在同面板补回）；Zen 已充值时可在同面板粘贴 Console API Key 切付费档。
 2. 「API Key」建 `sk-...`（明文仅显示一次）。
@@ -159,7 +159,7 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 
 ## 渠道
 
-> CodeBuddy（含国际）/ TRAE / Qoder / CodeArts / OfficeAce / 小浣熊 / 灵犀 需凭证；**Zen 与 Kilo 无凭证免费层**——池里一条虚拟占位行（调度 / 冷却 / 统计照常），额度列「免费层（无额度接口）」，健康度恒「无探测」。删虚拟行重启复活；永久停用 →「暂停」。
+> CodeBuddy（含国际）/ TRAE / Qoder / CodeArts / OfficeAce / 小浣熊 / 灵犀 / 超级麦吉 需凭证；**Zen 与 Kilo 无凭证免费层**——池里一条虚拟占位行（调度 / 冷却 / 统计照常），额度列「免费层（无额度接口）」，健康度恒「无探测」。删虚拟行重启复活；永久停用 →「暂停」。
 
 ### OpenCode Zen（`zen`）
 
@@ -233,6 +233,17 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 - **签到**：任务中心 `daily_check_in`，`status=claimed` 即已签。上游对重复领取回 200 假成功（余额不动）→ 奖励按**领前 / 领后余额差**算，差为 0 时读任务状态，绝不看 HTTP 200。
 - **错误分类**：401 → 凭证失效；402 / 额度文案 → 耗尽；403 → 瞬时；404 → 请求无效；429 → 点名模型；`AuditFailed` 换号无用；run 过期 → 重建一次。
 - **ToS 灰区**：复用登录态并伪装桌面客户端（`X-Client-Type: lingxi_claw` + `x-kso-app-name/app-version/device-id`），见 `provider/tos.py`。
+
+### 超级麦吉（`magicrew`）
+
+[超级麦吉](https://www.letsmagic.cn)，国内站。**没有登录按钮**：手机号登录协议未核实（参考实现里那条腿是零调用者的探索代码），只能粘网页会话凭据 —— 登录网页后从 DevTools 取 JWT，填 `{"jwt": "<值>", "organization_code": "<组织码>"}`（组织码国内站不强制，国际站强制）。
+
+- **三层凭证**：网页 JWT（30 天，业务接口）、网关 key `mgw_…`（2 小时，推理）、refresh_token（7 天，**一次性轮换**）。导入只需 JWT；网关 key 缺失 / 过期时自动签发（**签新 key 会吊销旧 key**，故只在缺失、过期或上游点名 `token无效` 时签，并进程内缓存）。`RefreshTask` 走 `PUT /api/v1/model-gateway/tokens` 续期并落库。
+- **鉴权头**：业务接口必须带 `origin` / `referer`（WAF 按 referer 判来源，缺了 403 空 body）；`organization-code` 非空才带；UA 是上游黑名单的一部分（`curl`、`Chrome/141.0.0.0` 回 405），默认值见 `MAGICREW_USER_AGENT`。
+- **推理**：标准 OpenAI SSE，**只支持流式**，必须带 `stream_options.include_usage`（否则上游不回 usage）。**成败判据是业务码不是状态码**：key 错配回 `HTTP 200 + {"code":403,"message":"token无效"}` 且 content-type 是 JSON —— 进流前先看 content-type，命中「token 无效」自动重签并重试一次。
+- **额度＝积分**：`GET /api/v1/quota/points/total` 的 `total_points` 即余额，`expiring_quota_details` 进到期阶梯（UTC+8 无时区，解析不出就跳过）；账本记「积分」。
+- **签到**：`POST /api/v1/login-gift`（请求体是**有内容的空串**），`data.granted` 是布尔：`false` = 今日已领（幂等，HTTP 仍 200），缺该字段 = 失败（不当「已签」）。国内站 +200/天。
+- **ToS 红线（唯一 red 渠道）**：条款 3.2 禁止脚本直调非公开接口与封装 / 代理 / 转接，3.3 明文禁止账号池与集中调度多账号积分。本服务的多凭证共享逐条命中 —— 导入时界面与审计都会带出这条理由，建议只做单账号自用。
 
 ### 通用上游（`generic`，可选）
 
@@ -406,7 +417,7 @@ curl -X POST http://127.0.0.1:8000/v1/fetch \
 
 ## 模型列表
 
-`GET /v1/models` 与 Playground 下拉只合并**当前有可用凭证**的渠道（冷却中仍算）。顺序：CodeBuddy（国内 → 国际）、TRAE、Qoder、CodeArts、OfficeAce、小浣熊、灵犀，Zen / Kilo 垫底；组内按名字典序；多渠道模型归最高优先级渠道（`src/api/model_merge.py` 的 `_PROVIDER_RANK`）。
+`GET /v1/models` 与 Playground 下拉只合并**当前有可用凭证**的渠道（冷却中仍算）。顺序：CodeBuddy（国内 → 国际）、TRAE、Qoder、CodeArts、OfficeAce、小浣熊、灵犀、超级麦吉，Zen / Kilo / 通用上游垫底；组内按名字典序；多渠道模型归最高优先级渠道（`src/api/model_merge.py` 的 `_PROVIDER_RANK`）。
 
 - **请求路由只认这份缓存**：目录能证明归属 → 候选只有那些渠道，全不可用 → 503；模型完全不在目录 → 仍按全部候选路由；直连指定与 Key 渠道绑定不受影响。
 - **落盘与启动即用**：进程内 TTL 缓存（只有服务层一层，TTL 见 `MODEL_LIST_TTL_SECONDS`）之外，每次拉取成功写 `DATA_DIR/model_catalog.json`，启动时同步读回；快照损坏或超 7 天只丢缓存。`MODEL_CATALOG_MINUTES` 任务兜底。
@@ -459,7 +470,7 @@ curl -X POST http://127.0.0.1:8000/v1/fetch \
 ### 积分与签到记录
 
 - **变动流水**（额度数字后下箭头）= **两次额度探测之间的净变化**，非动作归因（签到、成长、对话都改余额而上游不打日志 → 界面一律写「净变化」）。首次探测只建基线，余额没变不记，变「未知」仍记但不填变化量；留 90 天。
-- **按账本分流**：流水带 `ledger`（`pool` / `credits`）；CodeArts 与小浣熊记 `credits`，其余 `pool`。`GET /api/credentials/{id}/credit-events?ledger=`。
+- **按账本分流**：流水带 `ledger`（`pool` / `credits`）；CodeArts、小浣熊、灵犀与超级麦吉记 `credits`，其余 `pool`。`GET /api/credentials/{id}/credit-events?ledger=`。
 - **签到记录**（「更多操作 → 签到记录」）= 签到审计日志，每轮一行（时间 / 结果 / 领取积分 / 上游业务码 / 文案 / 触发方式），保留 90 天；`GET /api/credentials/{id}/checkin-events?limit=`。这是**动作的逐次结果**，不依赖余额 diff，故「显示成功却没加积分」可直接对上游答复定位。
 - **可用性时间线**（凭证详情 →「查看时间线」）= 状态迁移历史（冷却开始 / 冷却结束 / 硬失败 / 恢复 / 启停），每行带模型（模型级冷却时）、脱敏原因、可读说明与触发请求 ID；`GET /api/credentials/{id}/timeline?since=&until=&limit=`（operator+），保留 30 天。与 `credential_model_cooldowns` 的**当前态**互补：回答「昨天 14:00 这个号为什么不可用」不必再翻服务端日志。
 - **今日签到汇总**：`GET /api/credentials` 每条附 `checkin_today`（本地审计里今天最近一条，今日无记录 `null`）。`null` = 还没有结论（任务未轮到 / 暂停 / 无签到能力），不是失败。
@@ -646,6 +657,11 @@ python3 scripts/restore_db.py data/backups/coding2api-20261014-030000.sqlite3 --
 | `LINGXI_API_ENDPOINT` | `https://lingxi.wps.cn` | 灵犀上游地址 |
 | `LINGXI_ALLOWED_ENDPOINTS` | `https://lingxi.wps.cn,https://lingxi.kdocs.cn` | 灵犀白名单（对话面按两域顺序回落） |
 | `LINGXI_CHAT_MIN_INTERVAL` | `0` | 灵犀聊天最小间隔；可热更 |
+| `MAGICREW_API_ENDPOINT` | `https://i-magic-service.letsmagic.cn` | 超级麦吉国内站地址 |
+| `MAGICREW_ALLOWED_ENDPOINTS` | 同左 | 超级麦吉白名单（JWT 等同账号登录态） |
+| `MAGICREW_WEB_ORIGIN` | `https://www.letsmagic.cn` | 业务接口的 Origin / Referer 基准；缺了 WAF 403 |
+| `MAGICREW_USER_AGENT` | Chrome/141.0.7390.55 | 出站 UA；上游按整串拉黑脚本 UA，改完重启 |
+| `MAGICREW_CHAT_MIN_INTERVAL` | `0` | 超级麦吉聊天最小间隔；可热更 |
 | `QODER_CHAT_MIN_INTERVAL` | `5` | Qoder 节流；可热更 |
 | `CODEARTS_CHAT_MIN_INTERVAL` | `5` | CodeArts 节流；可热更 |
 | `CODEARTS_MAX_CONCURRENCY` | `3` | CodeArts 每账号在途并发上限；`0` 关闭；可热更 |

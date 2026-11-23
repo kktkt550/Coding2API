@@ -20,6 +20,10 @@ _LINGXI_REASON = (
     "请重新粘贴 Cookie；多账号请用独立浏览器配置分别登录"
 )
 _GENERIC_REASON = "登录态失效（额度探测返回 DEAD），请重新登录或重新粘贴凭证"
+_MAGICREW_REASON = (
+    "超级麦吉网页 JWT 已失效（有效期约 30 天），请重新从网页端复制 JWT 导入；"
+    "若只续网关 key，refresh_token 过期后同样需要重新导入 JWT"
+)
 
 
 def relogin_reason(provider_id: str, error: Exception) -> str:
@@ -33,4 +37,8 @@ def relogin_reason(provider_id: str, error: Exception) -> str:
         return ""
     if kind is not ErrKind.DEAD:
         return ""
-    return _LINGXI_REASON if provider_id == "lingxi" else _GENERIC_REASON
+    if provider_id == "lingxi":
+        return _LINGXI_REASON
+    if provider_id == "magicrew":
+        return _MAGICREW_REASON
+    return _GENERIC_REASON

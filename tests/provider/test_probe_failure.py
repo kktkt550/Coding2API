@@ -32,3 +32,14 @@ def test_other_provider_dead_gets_generic_reason():
     reason = relogin_reason("codebuddy", LingxiHTTPError(401, b""))
     assert "登录态失效" in reason
     assert "WPS" not in reason
+
+
+def test_magicrew_dead_explains_jwt_reimport():
+    """超级麦吉的死因是网页 JWT 过期（30 天），不是可续的会话。"""
+    from src.provider.magicrew.client import UpstreamHTTPError as MagicrewHTTPError
+
+    body = '{"code":403,"message":"token无效"}'.encode()
+    reason = relogin_reason("magicrew", MagicrewHTTPError(200, body))
+    assert "JWT" in reason
+    assert "refresh_token" in reason
+    assert "WPS" not in reason

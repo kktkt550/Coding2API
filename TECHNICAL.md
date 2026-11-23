@@ -327,6 +327,18 @@ WPS 账号 cookie + 一次对话三条请求。凭据接受整段 Cookie / 裸 `
 - 认证：浏览器登录 → 302 回调 → `ExchangeToken` → `GetUserInfo`；刷新 `POST /cloudide/api/v3/trae/oauth/ExchangeToken`（refreshToken 轮换）。签到 `/trae/api/v2/ug/checkin_credits/{status,claim}`；额度 `/trae/api/v2/pay/ide_user_ent_usage`。签到须确认到账：`claim` 对当天已签也回 `code:0` → `checked_in` 为真且回查 `credits` 有增加；`9074` 每次换 16 位数字串，一轮最多重试 2 次。
 - SSE 序列 `metadata` → `timing_cost` → `output`×N → `extra_info` → `token_usage` → `done`；`cache_read_input_tokens` / `cache_creation_input_tokens` → `cached_tokens`，无 per-request credit。流内 `1005` 权益不足、`4008` 配额耗尽（CREDIT，冷却到次日签到）、`4001` 参数 / 模型不可用；`developer` 归一 system。
 
+### 5.11 超级麦吉（`magicrew`）
+
+国内站模型网关。无登录轨道（`start_auth` / `poll_auth` / `complete_callback` / `relogin` 全部不实现）：手机号登录协议未核实，参考实现里那条 `phone_password` 是零调用者的探索代码，故只支持 JWT 手工导入。
+
+- **三层凭证**：网页 JWT（30 天，业务接口）、`mgw_` 网关 key（2 小时，推理）、refresh_token（7 天，一次性轮换）。导入只需 `{"jwt": …, "organization_code": …}`；网关 key 缺失 / 过期时按 JWT 现签（`POST /api/v1/model-gateway/tokens`），**签新 key 会吊销旧 key** ⇒ 只在缺失、过期或上游点名 `token无效` 时签，进程内按 JWT 指纹缓存。预刷新走 `PUT`（body 只带 `refresh_token`，不带 JWT——JWT 过期时这条腿仍要能用）。
+- **头族**：业务接口必须 `origin: <web_origin>` + `referer: <web_origin>/`（WAF 按 referer 判来源，缺了 403 空 body；签发 key 与昵称端点实测）；`organization-code` 非空才带。UA 是上游黑名单的一部分（整串精确匹配，`curl` / `Chrome/141.0.0.0` 回 405），默认 Chrome/141.0.7390.55，做成配置。
+- **推理**：标准 OpenAI SSE（复用 `openai_chunk`），只支持流式，请求体强制 `stream: true` + `stream_options.include_usage`（不发该字段上游不回 usage 帧）。**成败判据是业务码不是状态码**：key 错配回 `HTTP 200 + {"code":403,"message":"token无效"}` 且 content-type 是 `application/json` ⇒ 进流前先看 content-type，命中 token 无效自动重签并重试一次。
+- **额度**：`GET /api/v1/quota/points/total` → `total_points` 即积分余额（`Quota.total = remaining`，健康度近似），`expiring_quota_details` 按 UTC+8 无时区解析进到期阶梯；账本 `credits`。
+- **签到**：`POST /api/v1/login-gift`，请求体是**有内容的空串**（不是 `{}`）；`data.granted` 必须是布尔——`false` 是今日已领（幂等，HTTP 仍 200），缺字段判失败（否则畸形响会被当成「今天领过了」静默漏领）。国内站 +200/天。
+- **分类**：body 业务码优先（`token无效` → DEAD，`2182` 组织不存在 → INVALID，额度文案 → CREDIT，429 → SOFT），无业务码再按 HTTP（401/403 → DEAD、402 → CREDIT、400/404/422 → INVALID、429 → SOFT）。`MAGICREW_*` 端点白名单与 `MAGICREW_CHAT_MIN_INTERVAL` 独立 pacer。
+- **ToS**：`provider/tos.py` 唯一 `red` 登记——条款 3.2 禁脚本直调 / 封装代理，3.3 禁账号池。
+
 ## 6. 调度器
 
 ### 6.1 选号规格
