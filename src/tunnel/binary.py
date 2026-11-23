@@ -143,7 +143,7 @@ def download_binary(data_dir: str, info: PlatformInfo | None = None,
                              follow_redirects=True)
     except httpx.HTTPError as error:
         raise TunnelDownloadError(f"下载 cloudflared 失败: {error}") from None
-    if not response.ok:
+    if not response.is_success:
         raise TunnelDownloadError(f"下载 cloudflared 失败: HTTP {response.status_code} {url}")
     raw = response.content
     if not MIN_BINARY_BYTES <= len(raw) <= MAX_BINARY_BYTES:
